@@ -13,7 +13,7 @@ Record once. Feed it a spreadsheet. Let it fly across hundreds of rows and multi
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-`Sachin-Rawal091/FORMPILOT`
+`Sachin-Rawal091/FORMANCHOR`
 
 </div>
 
@@ -135,8 +135,8 @@ flowchart TD
 ### Installation
 
 ```bash
-git clone https://github.com/Sachin-Rawal091/FORMPILOT.git
-cd FORMPILOT
+git clone https://github.com/Sachin-Rawal091/FORMANCHOR.git
+cd FORMANCHOR
 npm install
 npm run dev        # starts Vite in watch mode with HMR
 ```
