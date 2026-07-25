@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧭 FormPilot
+# 🧭 FormAnchor
 
 ### Resilient, multi-page form automation for Chrome — powered by recordings and Excel
 
@@ -23,7 +23,7 @@ Record once. Feed it a spreadsheet. Let it fly across hundreds of rows and multi
 
 <div align="center">
 
-![FormPilot Demo — Record, Map, Execute, Done](docs/demo.gif)
+![FormAnchor Demo — Record, Map, Execute, Done](docs/demo.gif)
 
 _Record a form once → Upload your Excel → Hit Run → Watch it fly through hundreds of rows._
 
@@ -31,11 +31,11 @@ _Record a form once → Upload your Excel → Hit Run → Watch it fly through h
 
 ---
 
-## Why FormPilot exists
+## Why FormAnchor exists
 
 Most "form filler" extensions are built for static HTML forms and die the moment they meet a real SPA — React-driven fields, AJAX-loaded steps, custom date pickers, or a multi-page "Save & Continue" flow like you'd find on a government portal.
 
-FormPilot is built for exactly that environment:
+FormAnchor is built for exactly that environment:
 
 - **Record** a real user session interacting with a form — clicks, inputs, date picker selections, page transitions.
 - **Map** each field to a column in an Excel sheet.
@@ -47,7 +47,7 @@ It's designed to survive the things that break naive automation: elements that m
 
 ## ✨ Core Engines
 
-FormPilot isn't one script — it's a set of purpose-built subsystems that each own one hard problem:
+FormAnchor isn't one script — it's a set of purpose-built subsystems that each own one hard problem:
 
 | Engine                           | What it solves                                                                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -66,7 +66,7 @@ Each engine is isolated behind a clear interface, so adding support for a new da
 
 ## 🏗 Architecture
 
-FormPilot works within Manifest V3's constraints deliberately — the service worker orchestrates and persists state, while the content script owns the actual long-running DOM automation (since MV3 service workers can be killed at any time).
+FormAnchor works within Manifest V3's constraints deliberately — the service worker orchestrates and persists state, while the content script owns the actual long-running DOM automation (since MV3 service workers can be killed at any time).
 
 ```mermaid
 flowchart TD
@@ -158,9 +158,9 @@ npm run build
 
 ## 📋 Usage
 
-1. **Record** — Open the FormPilot popup on the target form and start a recording. Interact with the form exactly as a normal user would, including any multi-page "Save & Continue" steps.
+1. **Record** — Open the FormAnchor popup on the target form and start a recording. Interact with the form exactly as a normal user would, including any multi-page "Save & Continue" steps.
 2. **Map fields to Excel** — Import your `.xlsx` file and map each recorded field to a spreadsheet column.
-3. **Run** — Start execution. FormPilot replays the recording once per row, using the Selector, Wait, and Retry engines to handle timing and DOM variance automatically.
+3. **Run** — Start execution. FormAnchor replays the recording once per row, using the Selector, Wait, and Retry engines to handle timing and DOM variance automatically.
 4. **Monitor & resume** — Track progress from the dashboard. If a run is interrupted, resume from the last confirmed step rather than starting over.
 
 ---
@@ -168,7 +168,7 @@ npm run build
 ## 📁 Project Structure
 
 ```
-formpilot/
+formanchor/
 ├── src/
 │   ├── background/        # Service worker — orchestration, routing
 │   ├── content/            # Content script — recorder, executor
@@ -185,7 +185,7 @@ formpilot/
 
 ## 🗺 Roadmap
 
-FormPilot is under active development, tracked against an internal production-readiness audit.
+FormAnchor is under active development, tracked against an internal production-readiness audit.
 
 - [x] Core execution pipeline (Selector, Wait, Execution, Retry, State, Response, Logging engines)
 - [x] DatePicker adapter architecture with pluggable registry
@@ -216,16 +216,16 @@ If you're fixing a bug in one of the core engines, please add or update the corr
 
 ## ⚠️ Disclaimer
 
-FormPilot automates interactions with third-party websites, including forms that may require accurate, sensitive, or legally significant data (e.g. government portals). Use it responsibly, review every automated run, and ensure you have the right to submit data on the relevant platform. The maintainers are not responsible for misuse.
+FormAnchor automates interactions with third-party websites, including forms that may require accurate, sensitive, or legally significant data (e.g. government portals). Use it responsibly, review every automated run, and ensure you have the right to submit data on the relevant platform. The maintainers are not responsible for misuse.
 
 ---
 
 ## 📄 License
 
-FormPilot is open-source software licensed under the [MIT License](LICENSE).
+FormAnchor is open-source software licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**If FormPilot saves you from clicking through the same form 200 times, consider giving it a ⭐**
+**If FormAnchor saves you from clicking through the same form 200 times, consider giving it a ⭐**
 
 </div>
