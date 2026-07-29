@@ -1,6 +1,7 @@
 import { Action, Step } from "../../types";
 import { ExecutionEngine } from "./ExecutionEngine";
 import { SmartWaitEngine } from "./SmartWaitEngine";
+import { getExecutionContext } from "./executionContext";
 import { WAIT_ELEMENT_TIMEOUT, MAX_STEP_RETRIES, RETRY_BACKOFF_BASE, RETRY_BACKOFF_MAX } from "../../shared/constants";
 
 export enum ErrorClassification {
@@ -60,7 +61,7 @@ export class RetryEngine {
     let currentBackoff = RETRY_BACKOFF_BASE;
 
     while (attempt <= maxRetries) {
-      const executorStart = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+      const executorStart = getExecutionContext();
       if (executorStart && !executorStart.isRunning) {
         return {
           success: false,
@@ -147,7 +148,7 @@ export class RetryEngine {
         }
 
         // Apply backoff before next attempt
-        const executorBefore = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+        const executorBefore = getExecutionContext();
         if (executorBefore && !executorBefore.isRunning) {
           throw new Error("Execution aborted.");
         }
@@ -155,7 +156,7 @@ export class RetryEngine {
         // Sleep in chunks of 200ms to remain responsive to pause/abort
         let slept = 0;
         while (slept < currentBackoff) {
-          const executor = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+          const executor = getExecutionContext();
           if (executor && !executor.isRunning) {
             throw new Error("Execution aborted.");
           }
@@ -168,7 +169,7 @@ export class RetryEngine {
           slept += 200;
         }
 
-        const executorAfter = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+        const executorAfter = getExecutionContext();
         if (executorAfter && !executorAfter.isRunning) {
           throw new Error("Execution aborted.");
         }

@@ -20,10 +20,22 @@ export class SelectorEngine {
       }
     };
 
-    // 1. ID (1.0 confidence)
+    // 1. ID (1.0 confidence — but only if truly unique on the page)
     if (meta.id) {
       const el = document.getElementById(meta.id);
-      if (el) evaluateResult({ element: el, strategy: SelectorStrategy.ID, confidence: 1.0, shadow: false });
+      if (el) {
+        // BUG-AUDIT-FIX-1: Verify the ID is truly unique before assigning 1.0 confidence.
+        // Duplicate IDs are surprisingly common on dynamic sites (e.g. list item templates).
+        let idIsUnique = true;
+        try {
+          idIsUnique = document.querySelectorAll(`#${CSS.escape(meta.id)}`).length === 1;
+        } catch {
+          // Malformed ID that CSS.escape can't handle — treat as non-unique
+          idIsUnique = false;
+        }
+        const confidence = idIsUnique ? 1.0 : 0.5;
+        evaluateResult({ element: el, strategy: SelectorStrategy.ID, confidence, shadow: false });
+      }
     }
 
     // 2. Name (0.95 confidence) - only use if unique to prevent false matches in checkbox/radio groups

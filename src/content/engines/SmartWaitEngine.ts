@@ -1,5 +1,6 @@
 import { SelectorMeta, SelectorResult } from "../../types";
 import { SelectorEngine } from "./SelectorEngine";
+import { getExecutionContext } from "./executionContext";
 import {
   POLL_INTERVAL_BASE,
   WAIT_DOM_STABILITY_SILENCE,
@@ -93,15 +94,42 @@ export class SmartWaitEngine {
   /**
    * Resolves when there have been no DOM mutations for WAIT_DOM_STABILITY_SILENCE ms.
    * If timeout is reached, it resolves anyway to prevent hanging.
+   *
+   * BUG-AUDIT-FIX-8: Now pause/abort-aware — mutations during pause are ignored,
+   * abort resolves immediately, and the hard timeout accounts for pause time.
    */
   static async waitForDOMStability(timeout: number): Promise<void> {
     return new Promise((resolve) => {
-      let timer: ReturnType<typeof setTimeout>;
+      let silenceTimer: ReturnType<typeof setTimeout>;
       let timeoutTimer: ReturnType<typeof setTimeout>;
+      let pauseStart: number | null = null;
+      let accumulatedPauseTime = 0;
+      const startTime = Date.now();
 
       const observer = new MutationObserver(() => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
+        const executor = getExecutionContext();
+
+        // If aborted, resolve immediately — don't block execution teardown
+        if (executor && !executor.isRunning) {
+          cleanup();
+          resolve();
+          return;
+        }
+
+        // If paused, ignore mutations — don't reset the silence timer
+        if (executor && executor.isPaused) {
+          if (pauseStart === null) pauseStart = Date.now();
+          return;
+        }
+
+        // Unpaused — account for accumulated pause time
+        if (pauseStart !== null) {
+          accumulatedPauseTime += Date.now() - pauseStart;
+          pauseStart = null;
+        }
+
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
           cleanup();
           resolve();
         }, WAIT_DOM_STABILITY_SILENCE);
@@ -109,7 +137,7 @@ export class SmartWaitEngine {
 
       const cleanup = () => {
         observer.disconnect();
-        clearTimeout(timer);
+        clearTimeout(silenceTimer);
         clearTimeout(timeoutTimer);
       };
 
@@ -120,17 +148,35 @@ export class SmartWaitEngine {
         characterData: true,
       });
 
-      // Initial timer if no mutations happen at all
-      timer = setTimeout(() => {
+      // Initial silence timer if no mutations happen at all
+      silenceTimer = setTimeout(() => {
         cleanup();
         resolve();
       }, WAIT_DOM_STABILITY_SILENCE);
 
-      // Hard timeout
-      timeoutTimer = setTimeout(() => {
-        cleanup();
-        resolve();
-      }, timeout);
+      // Hard timeout — uses polling to account for pause time
+      const checkTimeout = () => {
+        const executor = getExecutionContext();
+        if (executor && !executor.isRunning) {
+          cleanup();
+          resolve();
+          return;
+        }
+        if (executor && executor.isPaused) {
+          if (pauseStart === null) pauseStart = Date.now();
+        } else if (pauseStart !== null) {
+          accumulatedPauseTime += Date.now() - pauseStart;
+          pauseStart = null;
+        }
+        const elapsed = Date.now() - startTime - accumulatedPauseTime;
+        if (elapsed >= timeout) {
+          cleanup();
+          resolve();
+        } else {
+          timeoutTimer = setTimeout(checkTimeout, 300);
+        }
+      };
+      timeoutTimer = setTimeout(checkTimeout, Math.min(timeout, 300));
     });
   }
 
@@ -165,7 +211,7 @@ export class SmartWaitEngine {
 
       // Fallback polling for pushState/replaceState which don't fire events natively
       const pollInterval = setInterval(() => {
-        const executor = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+        const executor = getExecutionContext();
         if (executor && !executor.isRunning) {
           if (!resolved) {
             resolved = true;
@@ -198,8 +244,15 @@ export class SmartWaitEngine {
         }
       }, 300);
 
+      // BUG-AUDIT-FIX-7: Added isRunning abort guard — previously only the
+      // 300ms poller checked for abort, creating a race window where event-driven
+      // callbacks could resolve on an already-aborted execution.
       const checkURLChange = () => {
-        const executor = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+        const executor = getExecutionContext();
+        if (executor && !executor.isRunning) {
+          done(false);
+          return;
+        }
         if (executor && executor.isPaused) {
           return;
         }
@@ -209,7 +262,12 @@ export class SmartWaitEngine {
       };
 
       const checkDOMMutation = () => {
-        const executor = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+        const executor = getExecutionContext();
+        // BUG-AUDIT-FIX-7: Abort guard for event-driven DOM mutation callback
+        if (executor && !executor.isRunning) {
+          done(false);
+          return;
+        }
         if (executor && executor.isPaused) {
           return;
         }
@@ -353,7 +411,7 @@ export class SmartWaitEngine {
 
     return new Promise((resolve, reject) => {
       const check = () => {
-        const executor = (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+        const executor = getExecutionContext();
         if (executor && !executor.isRunning) {
           reject(new Error("Execution aborted."));
           return;

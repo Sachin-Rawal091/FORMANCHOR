@@ -82,7 +82,7 @@ export class ResponseDetectionEngine {
    */
   static detectSuccess(currentUrl: string): boolean {
     const lowerUrl = currentUrl.toLowerCase();
-    const successKeywords = ["success", "confirm", "thank", "done", "complete", "submitted", "received", "checkout/order"];
+    const successKeywords = ["success", "confirm", "thank", "done", "complete", "submitted", "received", "checkout/order", "receipt", "invoice"];
     
     // 1. URL pattern match
     const matchesUrl = successKeywords.some(kw => lowerUrl.includes(kw));
@@ -104,7 +104,11 @@ export class ResponseDetectionEngine {
       ".modal.show .success",
       "[data-status='success']",
       ".order-confirmation",
-      ".submission-success"
+      ".submission-success",
+      ".receipt-overlay",
+      "#receipt-overlay",
+      "#receipt",
+      ".receipt"
     ];
 
     for (const selector of successSelectors) {
@@ -115,7 +119,7 @@ export class ResponseDetectionEngine {
 
     // 3. Text content scans (headings, overlays, modals, alerts)
     const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, .alert, .receipt-title, .modal-title, .toast-body"));
-    const successTextRegex = /thank\s*you|submitted\s*successfully|order\s*complete|payment\s*received|confirmed|clearance\s*approved|approved|verification\s*complete|registered\s*successfully/i;
+    const successTextRegex = /thank\s*you|submitted\s*successfully|order\s*complete|payment\s*received|confirmed|clearance\s*approved|approved|verification\s*complete|registered\s*successfully|receipt\s*generated/i;
     for (const heading of headings) {
       if (heading.textContent && successTextRegex.test(heading.textContent)) {
         return true;
@@ -279,7 +283,7 @@ export class ResponseDetectionEngine {
 
     // Description
     const desc = document.createElement("p");
-    desc.innerText = "FormPilot detected a CAPTCHA. Please solve it on the page and click 'Resume' below.";
+    desc.innerText = "FormAnchor detected a CAPTCHA. Please solve it on the page and click 'Resume' below.";
     desc.style.fontSize = "13px";
     desc.style.lineHeight = "1.5";
     desc.style.margin = "0";

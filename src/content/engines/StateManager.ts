@@ -77,11 +77,9 @@ export class StateManager {
       currentUrl: window.location.href
     };
 
-    await StorageManager.addSessionMeta({
-      sessionId,
-      timestamp: Date.now(),
-      recordingId: recordingId || "default"
-    }).catch(err => logger.warn('StateManager', 'Failed to add session meta:', err));
+    // NOTE: addSessionMeta is intentionally NOT called here — the popup's
+    // executionSlice.ts already writes session meta before sending START_EXECUTION.
+    // A duplicate write from the content script caused a timestamp overwrite race.
 
     await StorageManager.setExecutionState(newState);
     return newState;

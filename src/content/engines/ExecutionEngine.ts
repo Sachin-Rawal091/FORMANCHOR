@@ -1,12 +1,15 @@
 import { Step, Action, LogStatus, SelectorResult } from "../../types";
-import { setInputValue, setSelectValue, setTextareaValue, setCheckboxValue, dispatchEvents } from "../domUtils";
+import { setInputValue, setSelectValue, setCheckboxValue, dispatchEvents } from "../domUtils";
 import { SmartWaitEngine } from "./SmartWaitEngine";
-import { WAIT_DOM_STABLE_TIMEOUT, WAIT_URL_CHANGE_TIMEOUT } from "../../shared/constants";
+import { WAIT_DOM_STABLE_TIMEOUT, WAIT_URL_CHANGE_TIMEOUT, CLOSE_DISMISS_REGEX, SUBMIT_KEYWORD_REGEX } from "../../shared/constants";
 import { StorageManager } from "../../storage/StorageManager";
 import { logger } from "../../utils/logger";
 import { sanitizeTextValue } from "../../utils/sanitize";
 import { DatePickerEngine } from "../datepickers/DatePickerEngine";
 import { DatePickerRegistry } from "../datepickers/DatePickerRegistry";
+import { InputNormalizer } from "../datepickers/InputNormalizer";
+import { FieldDetector } from "../datepickers/FieldDetector";
+import { StrategyResolver } from "../datepickers/StrategyResolver";
 
 // Exposed so tests can disable the real-world settle/verification wait without
 // ExecutionEngine needing to know it's running under a test runner. Defaults to
@@ -28,6 +31,11 @@ export interface ResolvedValueResult {
 }
 
 export class ExecutionEngine {
+  private static getLabelForInput(id: string | null): HTMLLabelElement | null {
+    if (!id) return null;
+    return document.querySelector(`label[for="${CSS.escape(id)}"]`);
+  }
+
   /**
    * Resolves the variable from Excel row data and handles the 8 missing-value scenarios.
    */
@@ -141,39 +149,18 @@ export class ExecutionEngine {
     const el = selectorResult.element as HTMLElement;
 
     switch (step.action) {
-      case Action.FILL:
-        if (el instanceof HTMLInputElement) {
-          let val = resolvedValue || "";
-          const isDateInput = 
-            el.type === 'date' || 
-            el.classList.contains('datepicker') || 
-            el.classList.contains('rmdp-input') || 
-            el.classList.contains('flatpickr-input') ||
-            /date|calendar/i.test(el.name || el.id || el.className || '');
-
-          if (isDateInput && val) {
-            const detectedFormat = detectElementDateFormat(el);
-            const dateObj = parseDateString(val, detectedFormat);
-            if (dateObj && !isNaN(dateObj.getTime())) {
-              if (detectedFormat) {
-                val = formatDate(dateObj, detectedFormat);
-              }
-            }
-          }
-          setInputValue(el, val);
-          // BUG-101: Readback verification
-          if (val && !el.value) {
-            throw new Error(`Input field remained empty after fill attempt.`);
-          }
-        } else if (el instanceof HTMLTextAreaElement) {
-          const val = resolvedValue || "";
-          setTextareaValue(el, val);
-          // BUG-101: Readback verification
-          if (val && !el.value) {
-            throw new Error(`Textarea remained empty after fill attempt.`);
-          }
+      case Action.FILL: {
+        const normalizedVal = InputNormalizer.normalize(resolvedValue);
+        const detection = FieldDetector.detect(el);
+        const strategy = StrategyResolver.resolve(detection);
+        
+        logger.info('ExecutionEngine', `Action.FILL on step ${step.id} resolved strategy "${strategy.name}" (Score: ${detection.score})`);
+        const filled = await strategy.execute(el, normalizedVal, detection);
+        if (!filled && normalizedVal) {
+          throw new Error(`Fill attempt using ${strategy.name} failed for step ${step.id}. Element remained empty or unverified.`);
         }
         break;
+      }
 
       case Action.CLICK: {
         const beforeClickUrl = window.location.href;
@@ -223,7 +210,12 @@ export class ExecutionEngine {
 
       case Action.SELECT:
         if (el instanceof HTMLSelectElement) {
-          setSelectValue(el, resolvedValue || "");
+          const matchResult = setSelectValue(el, resolvedValue || "");
+          
+          if (matchResult) {
+            logger.info('ExecutionEngine', `Matched "${resolvedValue}" using strategy ${matchResult.strategy} (${matchResult.confidence}%) -> "${matchResult.matchedText}"`);
+          }
+
           await SmartWaitEngine.waitForDOMStability(WAIT_DOM_STABLE_TIMEOUT).catch((err) => {
             logger.debug('ExecutionEngine', `SELECT DOM stability wait timed out: ${err.message}`);
           });
@@ -248,7 +240,7 @@ export class ExecutionEngine {
             // Try matching by label text
             let labelText = "";
             if (r.id) {
-              const labelEl = document.querySelector(`label[for="${CSS.escape(r.id)}"]`);
+              const labelEl = ExecutionEngine.getLabelForInput(r.id);
               if (labelEl) {
                 labelText = labelEl.textContent || "";
               }
@@ -283,7 +275,7 @@ export class ExecutionEngine {
             checkboxInput = el.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
             if (!checkboxInput) {
               if (el.id) {
-                const labelEl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+                const labelEl = ExecutionEngine.getLabelForInput(el.id);
                 if (labelEl && labelEl instanceof HTMLInputElement && labelEl.type === "checkbox") {
                   checkboxInput = labelEl;
                 }
@@ -326,7 +318,7 @@ export class ExecutionEngine {
                 const elValue = checkboxInput.value ? checkboxInput.value.toLowerCase().trim() : "";
                 let labelText = "";
                 if (checkboxInput.id) {
-                  const labelEl = document.querySelector(`label[for="${CSS.escape(checkboxInput.id)}"]`);
+                  const labelEl = ExecutionEngine.getLabelForInput(checkboxInput.id);
                   if (labelEl) {
                     labelText = labelEl.textContent || "";
                   }
@@ -410,17 +402,29 @@ export class ExecutionEngine {
         });
 
         if (el instanceof HTMLFormElement) {
-          // Find primary submit button to trigger native/framework handlers
-          const submitBtn = el.querySelector('button[type="submit"], input[type="submit"]');
+          const submitBtn = ExecutionEngine.findPrimarySubmitButton(el);
           if (submitBtn) {
             dispatchEvents(submitBtn, ["mousedown", "mouseup", "click"]);
           } else {
-            // Fallback to native form.submit() if no button exists
             el.submit();
           }
         } else {
-          // If it's a button triggering submit
-          dispatchEvents(el, ["mousedown", "mouseup", "click"]);
+          const elementAttrs = (el.id || "") + " " + (el.className || "") + " " + (el.getAttribute("aria-label") || "");
+          const isCloseOrDismiss = CLOSE_DISMISS_REGEX.test(elementAttrs);
+          const parentForm = el.closest("form") as HTMLFormElement | null;
+          const realSubmitBtn = parentForm ? ExecutionEngine.findPrimarySubmitButton(parentForm) : null;
+
+          if (isCloseOrDismiss && realSubmitBtn) {
+            logger.warn('ExecutionEngine', `Target element ${el.id || el.className} is a modal/close button. Redirecting SUBMIT action to real form submit button.`);
+            dispatchEvents(realSubmitBtn, ["mousedown", "mouseup", "click"]);
+          } else if (isCloseOrDismiss && !parentForm) {
+            logger.warn('ExecutionEngine', `Target element is a close button outside form. Executing CLICK instead of SUBMIT.`);
+            dispatchEvents(el, ["mousedown", "mouseup", "click"]);
+            submitObserver.disconnect();
+            break;
+          } else {
+            dispatchEvents(el, ["mousedown", "mouseup", "click"]);
+          }
         }
 
         if (ENABLE_ACTION_SETTLE_WAIT) {
@@ -505,26 +509,17 @@ export class ExecutionEngine {
       case Action.DATEPICKER:
         logger.info('ExecutionEngine', `Handling Action.DATEPICKER for step ${step.id}`);
         if (resolvedValue) {
-          const adapterMatched = !!DatePickerRegistry.detect(el);
+          const matchedAdapter = DatePickerRegistry.detect(el);
           const filled = await DatePickerEngine.fill(el, resolvedValue);
           if (!filled) {
-            if (adapterMatched) {
-              // A dedicated adapter (e.g. RmdpAdapter) recognized this element's
-              // class but failed to complete the open/navigate/select/verify
-              // sequence. These are React/JS-controlled widgets that never read
-              // the raw DOM .value (see RmdpAdapter's class docstring) — the
-              // naive fallback below is a guaranteed silent no-op for them.
-              // Throw so RetryEngine retries and, if it still can't succeed,
-              // honestly reports FAILED instead of a false FILLED/FILLED_COERCED
-              // status (the resolvedStatus logged by RetryEngine reflects value
-              // parsing, not DOM outcome, so a swallowed failure here silently
-              // becomes a fabricated "success" in the Activity Log).
-              throw new Error(`DatePicker adapter matched but could not complete the fill sequence for step ${step.id}. See prior WARN logs for the exact stage that failed.`);
+            if (matchedAdapter) {
+              if (matchedAdapter.name === "GenericDatePickerAdapter") {
+                logger.warn('ExecutionEngine', `GenericDatePickerAdapter could not open popup for step ${step.id}. Escalating to direct input fallback.`);
+                await this.fallbackDatePickerFill(el, resolvedValue);
+                break;
+              }
+              throw new Error(`DatePicker adapter matched (${matchedAdapter.name}) but could not complete the fill sequence for step ${step.id}. See prior WARN logs for the exact stage that failed.`);
             }
-            // No adapter recognized this element at all (e.g. a plain native
-            // <input type="date"> or an unrecognized simple widget) — the naive
-            // fallback is the only option available and may legitimately work
-            // since such elements do read their raw DOM value.
             logger.warn('ExecutionEngine', `DatePickerEngine could not match any adapter for step ${step.id}. Falling back to native/direct interaction.`);
             await this.fallbackDatePickerFill(el, resolvedValue);
           }
@@ -548,18 +543,50 @@ export class ExecutionEngine {
         val = formatDate(dateObj, detectedFormat);
       }
     }
-    // Try setting on the input directly (works for native date inputs)
-    if (el instanceof HTMLInputElement) {
-      setInputValue(el, val);
+    
+    const targetInput = el instanceof HTMLInputElement ? el : (el.querySelector('input') as HTMLInputElement | null);
+    if (targetInput instanceof HTMLInputElement) {
+      setInputValue(targetInput, val);
+      dispatchEvents(targetInput, ["input", "change", "blur"]);
+      targetInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+      targetInput.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+      targetInput.blur();
     }
+
     // Also try setting on any hidden input within the same container
     const container = el.closest('.datepicker, .date-picker, .flatpickr-wrapper, [class*="date"]');
     if (container) {
       const hiddenInput = container.querySelector('input[type="hidden"], input.flatpickr-input') as HTMLInputElement | null;
-      if (hiddenInput && hiddenInput !== el) {
+      if (hiddenInput && hiddenInput !== targetInput) {
         setInputValue(hiddenInput, val);
+        dispatchEvents(hiddenInput, ["input", "change", "blur"]);
       }
     }
+  }
+
+  /**
+   * Resolves the primary submit button in a form, excluding close/dismiss/modal buttons
+   * and prioritizing submit keyword text matches.
+   */
+  static findPrimarySubmitButton(form: HTMLFormElement): HTMLElement | null {
+    const candidates = Array.from(
+      form.querySelectorAll('button[type="submit"], input[type="submit"], button:not([type]), input[type="button"]')
+    ) as HTMLElement[];
+
+    const validCandidates = candidates.filter((btn) => {
+      const type = btn.getAttribute("type")?.toLowerCase();
+      if (type === "button" && !SUBMIT_KEYWORD_REGEX.test(btn.textContent || "")) {
+        return false;
+      }
+      const attrs = (btn.id || "") + " " + (btn.className || "") + " " + (btn.getAttribute("aria-label") || "");
+      return !CLOSE_DISMISS_REGEX.test(attrs);
+    });
+
+    if (validCandidates.length === 0) return null;
+
+    // Prefer explicit text match for submit keywords
+    const textMatch = validCandidates.find((btn) => SUBMIT_KEYWORD_REGEX.test(btn.textContent || ""));
+    return textMatch || validCandidates[0];
   }
 }
 
