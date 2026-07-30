@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tourcher Test — KRP &amp; Job Portal Live Test Suite</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@4.24.16/dist/antd.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/react@17/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@17/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/moment@2/min/moment.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/antd@4.24.16/dist/antd.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js" crossorigin></script>
+<script>
+  window.addEventListener('error', function(e){
+    var el = document.getElementById('krp-root');
+    if (el && !el.dataset.rendered) {
+      el.innerHTML = '<div class="panel"><h2>AntD section failed to load</h2>' +
+        '<p class="sub">Error: ' + (e.message || 'unknown') + '</p>' +
+        '<p class="sub">Check your internet connection / ad-blocker — this section loads React and Ant Design from a CDN. The Gov-style/Vanilla tab does not depend on any CDN and should still work.</p></div>';
+    }
+  });
+</script>
+
+<style>
+  :root{
+    --ink:#1b1f23;
+    --paper:#f6f4ef;
+    --line:#d8d2c4;
+    --accent:#3457d5;
+    --accent-soft:#e7ebfb;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: 'Inter', system-ui, sans-serif;
+    color-scheme: light;
+  }
+  *{box-sizing:border-box;}
+  html{ color-scheme: light; background:var(--paper); }
+  body{
+    margin:0;
+    font-family:var(--sans);
+    background:var(--paper);
+    color:var(--ink);
+  }
+  input, select, textarea, button{ color-scheme: light; }
+  #antd-load-error{
+    display:none; background:#fff3f2; border:1px solid #f3a2a2; color:#8a1f1f;
+    padding:16px 18px; border-radius:10px; font-size:13px; line-height:1.5; margin-bottom:16px;
+  }
+  #antd-load-error code{ background:#fde2e2; padding:1px 5px; border-radius:4px; }
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 32px; border-bottom:1px solid var(--line);
+    background:#fff;
+    position:sticky; top:0; z-index:20;
+  }
+  .brand{ font-weight:700; letter-spacing:-0.02em; font-size:18px; }
+  .brand span{ color:var(--accent); }
+  .tabbar{ display:flex; gap:6px; }
+  .tabbtn{
+    border:1px solid var(--line); background:#fff; padding:8px 14px;
+    font-size:13px; border-radius:8px; cursor:pointer; color:var(--ink);
+  }
+  .tabbtn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+
+  .wrap{ max-width:880px; margin:0 auto; padding:32px 20px 90px; }
+  .panel{
+    background:#fff; border:1px solid var(--line); border-radius:14px;
+    padding:28px; margin-bottom:20px;
+  }
+  .panel h2{ margin:0 0 4px; font-size:16px; }
+  .panel .sub{ margin:0 0 18px; font-size:13px; color:#6b7280; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:640px){ .grid2{ grid-template-columns:1fr; } }
+
+  .field-note{ font-size:11px; color:#9ca3af; margin-top:4px; }
+
+  /* ---- Vanilla / "Material-style" floating label inputs ---- */
+  .mfield{ position:relative; margin-bottom:22px; }
+  .mfield input, .mfield textarea, .mfield select{
+    width:100%; padding:14px 12px 8px; border:none; border-bottom:2px solid var(--line);
+    background:#fafafa; font-size:14px; border-radius:6px 6px 0 0; font-family:var(--sans);
+    outline:none;
+  }
+  .mfield textarea{ resize:vertical; min-height:70px; }
+  .mfield input:focus, .mfield textarea:focus{ border-bottom-color:var(--accent); background:#f2f4fc; }
+  .mfield label{
+    position:absolute; left:12px; top:14px; font-size:14px; color:#8a8f98;
+    pointer-events:none; transition:all .15s ease;
+    background:transparent;
+  }
+  .mfield input:focus + label,
+  .mfield input:not(:placeholder-shown) + label,
+  .mfield textarea:focus + label,
+  .mfield textarea:not(:placeholder-shown) + label{
+    top:2px; font-size:10.5px; color:var(--accent); letter-spacing:.03em; text-transform:uppercase;
+  }
+  .mfield input::placeholder, .mfield textarea::placeholder{ color:transparent; }
+
+  /* OTP boxes */
+  .otp-row{ display:flex; gap:8px; }
+  .otp-row input{
+    width:44px; height:52px; text-align:center; font-size:20px; border-radius:8px;
+    border:1px solid var(--line); background:#fafafa; font-family:var(--mono);
+  }
+  .otp-row input:focus{ outline:2px solid var(--accent); border-color:var(--accent); }
+
+  /* Custom checkbox pills */
+  .pillgroup{ display:flex; flex-wrap:wrap; gap:8px; }
+  .pill{
+    border:1px solid var(--line); border-radius:999px; padding:7px 14px; font-size:13px;
+    cursor:pointer; user-select:none; background:#fff;
+  }
+  .pill.on{ background:var(--accent); color:#fff; border-color:var(--accent); }
+
+  /* Range slider */
+  .rangewrap{ display:flex; align-items:center; gap:12px; }
+  .rangewrap input[type=range]{ flex:1; }
+  .rangeval{ font-family:var(--mono); font-size:13px; width:42px; text-align:right; }
+
+  /* Signature pad */
+  canvas#sigpad{
+    width:100%; height:140px; border:1px dashed var(--line); border-radius:8px; background:#fdfcf9; touch-action:none;
+  }
+  .sigbar{ display:flex; justify-content:space-between; margin-top:6px; }
+  .sigbar button{
+    border:1px solid var(--line); background:#fff; padding:5px 10px; border-radius:6px;
+    font-size:12px; cursor:pointer;
+  }
+
+  /* Shadow host frame */
+  .shadow-host-frame{ border:1px solid var(--line); border-radius:10px; padding:14px; background:#fbfaf7; }
+  iframe.embedded-form{ width:100%; height:230px; border:1px solid var(--line); border-radius:10px; }
+
+  .submit-row{ display:flex; justify-content:flex-end; gap:10px; margin-top:8px; }
+  .btn{ padding:10px 22px; border-radius:8px; font-size:14px; cursor:pointer; border:1px solid var(--ink); }
+  .btn.primary{ background:var(--ink); color:#fff; }
+  .btn.ghost{ background:#fff; color:var(--ink); }
+
+  .status-msg{ font-size:13px; padding:10px 14px; border-radius:8px; background:var(--accent-soft); color:var(--accent); display:none; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">FormPilot Tourcher<span>.test</span></div>
+  <div class="tabbar" id="tabbar"></div>
+</div>
+
+<div class="wrap">
+  <div id="antd-load-error">
+    <strong>The Ant Design bundle didn't load.</strong> This test page pulls React and AntD live from a CDN.
+  </div>
+  <div id="krp-root"></div>
+  <div id="job-root" style="display:none;"></div>
+  <div id="vanilla-root" style="display:none;"></div>
+</div>
+
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+const {
+  Form, Input, Select, DatePicker, Radio, Checkbox, Upload, Button,
+  Slider, Steps, InputNumber, ConfigProvider
+} = antd;
+
+const CATEGORIES = ["General", "OBC", "SC", "ST", "EWS", "Minority"];
+const SCHEMES = ["Post-Matric Scholarship", "Pre-Matric Scholarship", "Merit-cum-Means Assistance", "Higher Education Incentive"];
+const NATIONALITIES = ["Indian", "American", "British", "Canadian", "Australian", "German", "Japanese", "Singaporean", "Emirati"];
+const LOCATIONS = ["Delhi NCR", "Mumbai", "Bangalore", "Hyderabad", "Pune", "Chennai", "Kolkata", "Remote"];
+
+/* -------------------------------------------------------------
+ * 1. KRP SCHOLARSHIP & BENEFICIARY CLAIM PORTAL (AntD v4 React)
+ * ------------------------------------------------------------- */
+function KrpStepPersonal(){
+  return (
+    <div className="grid2">
+      <Form.Item name="fullName" label="Full legal name" rules={[{required:true}]}>
+        <Input placeholder="e.g. Sachin Rawal" autoComplete="name" />
+      </Form.Item>
+      <Form.Item name="email" label="Email address" rules={[{required:true, type:'email'}]}>
+        <Input placeholder="sachin@example.com" autoComplete="email" />
+      </Form.Item>
+      <Form.Item name="phone" label="Mobile number" rules={[{required:true}]}>
+        <Input placeholder="+91 98xxxxxxxx" autoComplete="tel" />
+      </Form.Item>
+      <Form.Item name="dob" label="Date of birth" rules={[{required:true}]}>
+        <DatePicker style={{width:'100%'}} format="DD/MM/YYYY" placeholder="Select date" />
+      </Form.Item>
+      <Form.Item name="studentId" label="Student Enrollment / Reg No." rules={[{required:true}]}>
+        <Input placeholder="e.g. KRP-2026-8892" />
+      </Form.Item>
+      <Form.Item name="category" label="Social Category">
+        <Select placeholder="Select category" options={CATEGORIES.map(c=>({value:c,label:c}))} />
+      </Form.Item>
+    </div>
+  );
+}
+
+function KrpStepBank(){
+  return (
+    <div className="grid2">
+      <Form.Item name="aadhaar" label="Aadhaar Number (12 digits)" rules={[{required:true}]}>
+        <Input placeholder="1234 5678 9012" maxLength={12} />
+      </Form.Item>
+      <Form.Item name="accountNumber" label="Bank Account Number" rules={[{required:true}]}>
+        <Input placeholder="e.g. 987654321012" />
+      </Form.Item>
+      <Form.Item name="ifscCode" label="Bank IFSC Code" rules={[{required:true}]}>
+        <Input placeholder="e.g. SBIN0001234" />
+      </Form.Item>
+      <Form.Item name="schemeName" label="Scholarship Scheme" rules={[{required:true}]}>
+        <Select placeholder="Select scheme" options={SCHEMES.map(s=>({value:s,label:s}))} />
+      </Form.Item>
+      <Form.Item name="claimDate" label="Claim Submission Date" rules={[{required:true}]}>
+        <DatePicker style={{width:'100%'}} format="DD/MM/YYYY" placeholder="Select claim date" />
+      </Form.Item>
+    </div>
+  );
+}
+
+function KrpWizard(){
+  const [form] = Form.useForm();
+  const [current, setCurrent] = useState(0);
+  const [done, setDone] = useState(false);
+
+  const steps = [
+    { title: 'Student Info', content: <KrpStepPersonal/> },
+    { title: 'Bank & Claim', content: <KrpStepBank/> },
+  ];
+
+  const next = async () => {
+    try { await form.validateFields(); setCurrent(c => Math.min(c+1, steps.length-1)); } catch(e){}
+  };
+  const prev = () => setCurrent(c => Math.max(c-1, 0));
+  const finish = async () => {
+    try { await form.validateFields(); setDone(true); } catch(e){}
+  };
+
+  return (
+    <ConfigProvider>
+      <div className="panel">
+        <h2>KRP Beneficiary &amp; Student Claim Portal</h2>
+        <p className="sub">Live portal workflow: Student registration, Aadhaar verification, bank account mapping, and claim date picking.</p>
+        <Steps current={current} items={steps.map(s=>({title:s.title}))} style={{marginBottom:24}} size="small" />
+        <Form form={form} layout="vertical">
+          {steps[current].content}
+        </Form>
+        <div className="submit-row">
+          {current > 0 && <button type="button" className="btn ghost" onClick={prev}>Previous</button>}
+          {current < steps.length - 1 && <button type="button" className="btn primary" onClick={next}>Next</button>}
+          {current === steps.length - 1 && <button type="button" className="btn primary" onClick={finish}>Submit Claim</button>}
+        </div>
+        <div className="status-msg" style={{display: done ? 'block' : 'none'}}>KRP Claim Submitted Successfully!</div>
+      </div>
+    </ConfigProvider>
+  );
+}
+
+/* -------------------------------------------------------------
+ * 2. JOB RECRUITMENT APPLICATION PORTAL (AntD v4 React)
+ * ------------------------------------------------------------- */
+function JobPortal(){
+  const [form] = Form.useForm();
+  const [done, setDone] = useState(false);
+
+  const finish = async () => {
+    try { await form.validateFields(); setDone(true); } catch(e){}
+  };
+
+  return (
+    <ConfigProvider>
+      <div className="panel">
+        <h2>Job Recruitment &amp; Career Application Portal</h2>
+        <p className="sub">Job portal workflow: Candidate profile, birth date selection, preferred location, and joining date.</p>
+        <Form form={form} layout="vertical">
+          <div className="grid2">
+            <Form.Item name="applicantName" label="Candidate Name" rules={[{required:true}]}>
+              <Input placeholder="e.g. Rahul Sharma" />
+            </Form.Item>
+            <Form.Item name="email" label="Email Address" rules={[{required:true, type:'email'}]}>
+              <Input placeholder="rahul@example.com" />
+            </Form.Item>
+
+            <Form.Item name="dob" label="Date of Birth" rules={[{required:true}]}>
+              <DatePicker style={{width:'100%'}} format="DD/MM/YYYY" placeholder="Select DOB" />
+            </Form.Item>
+
+            <Form.Item name="joiningDate" label="Expected Joining Date" rules={[{required:true}]}>
+              <DatePicker style={{width:'100%'}} format="DD/MM/YYYY" placeholder="Select joining date" />
+            </Form.Item>
+
+            <Form.Item name="nationality" label="Nationality">
+              <Select placeholder="Select nationality" options={NATIONALITIES.map(n=>({value:n,label:n}))} />
+            </Form.Item>
+
+            <Form.Item name="location" label="Preferred Work Location">
+              <Select placeholder="Select location" options={LOCATIONS.map(l=>({value:l,label:l}))} />
+            </Form.Item>
+          </div>
+          <div className="submit-row">
+            <button type="button" className="btn primary" onClick={finish}>Submit Job Application</button>
+          </div>
+          <div className="status-msg" style={{display: done ? 'block' : 'none'}}>Job Application Submitted Successfully!</div>
+        </Form>
+      </div>
+    </ConfigProvider>
+  );
+}
+
+try {
+  ReactDOM.render(<KrpWizard/>, document.getElementById('krp-root'));
+  ReactDOM.render(<JobPortal/>, document.getElementById('job-root'));
+} catch (err) {
+  console.error(err);
+}
+</script>
+
+<script>
+/* -------------------------------------------------------------
+ * 3. VANILLA / GOVERNMENT BENEFITS SECTION (Native DOM)
+ * ------------------------------------------------------------- */
+function buildVanillaSection(){
+  const root = document.getElementById('vanilla-root');
+  root.innerHTML = `
+    <div class="panel">
+      <h2>Government Benefits &amp; Direct Claim Form</h2>
+      <p class="sub">Material-style floating labels, native HTML5 date input, OTP verification grid, and canvas signature pad.</p>
+
+      <div class="grid2">
+        <div class="mfield">
+          <input type="text" id="v_name" placeholder=" " autocomplete="off" />
+          <label for="v_name">Applicant full legal name</label>
+        </div>
+        <div class="mfield">
+          <input type="text" id="v_aadhaar" placeholder=" " autocomplete="off" maxlength="12" />
+          <label for="v_aadhaar">National ID / Aadhaar number</label>
+        </div>
+        <div class="mfield">
+          <input type="date" id="v_dob" placeholder=" " autocomplete="off" />
+          <label for="v_dob">Date of birth</label>
+        </div>
+        <div class="mfield">
+          <input type="date" id="v_claim_date" placeholder=" " autocomplete="off" />
+          <label for="v_claim_date">Claim filing date</label>
+        </div>
+      </div>
+
+      <div style="margin-bottom:22px;">
+        <div class="field-note" style="margin-bottom:6px;">Verification code (OTP)</div>
+        <div class="otp-row" id="otp-row">
+          ${[0,1,2,3,4,5].map(i=>`<input inputmode="numeric" maxlength="1" data-idx="${i}" autocomplete="one-time-code" />`).join("")}
+        </div>
+      </div>
+
+      <div class="submit-row">
+        <button type="button" class="btn primary" id="vanillaSubmit">Submit direct claim</button>
+      </div>
+      <div class="status-msg" id="vanillaStatus">Direct Claim Form Submitted!</div>
+    </div>
+  `;
+
+  document.getElementById('vanillaSubmit').addEventListener('click', (e)=>{
+    e.preventDefault();
+    document.getElementById('vanillaStatus').style.display = 'block';
+  });
+}
+buildVanillaSection();
+
+// ---------------- TAB SWITCHING MECHANISM ----------------
+const tabbar = document.getElementById('tabbar');
+const tabs = [
+  { key: 'krp', label: 'KRP Claim Portal (React)', el: document.getElementById('krp-root') },
+  { key: 'job', label: 'Job Application (React)', el: document.getElementById('job-root') },
+  { key: 'vanilla', label: 'Gov Direct Claim (Vanilla)', el: document.getElementById('vanilla-root') },
+];
+
+tabs.forEach((t, i)=>{
+  const btn = document.createElement('button');
+  btn.className = 'tabbtn' + (i===0 ? ' active' : '');
+  btn.textContent = t.label;
+  btn.addEventListener('click', ()=>{
+    tabs.forEach(tt => tt.el.style.display = 'none');
+    document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    t.el.style.display = 'block';
+  });
+  tabbar.appendChild(btn);
+});
+</script>
+</body>
+</html>

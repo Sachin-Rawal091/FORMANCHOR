@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Autofill Torture Test — Student &amp; Job Registration</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@4.24.16/dist/antd.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/react@17/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@17/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/moment@2/min/moment.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/antd@4.24.16/dist/antd.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js" crossorigin></script>
+<script>
+  window.addEventListener('error', function(e){
+    var el = document.getElementById('antd-root');
+    if (el && !el.dataset.rendered) {
+      el.innerHTML = '<div class="panel"><h2>AntD section failed to load</h2>' +
+        '<p class="sub">Error: ' + (e.message || 'unknown') + '</p>' +
+        '<p class="sub">Check your internet connection / ad-blocker — this section loads React and Ant Design from a CDN. The Gov-style/Vanilla tab does not depend on any CDN and should still work.</p></div>';
+    }
+  });
+</script>
+
+<style>
+  :root{
+    --ink:#1b1f23;
+    --paper:#f6f4ef;
+    --line:#d8d2c4;
+    --accent:#3457d5;
+    --accent-soft:#e7ebfb;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: 'Inter', system-ui, sans-serif;
+    color-scheme: light; /* stop the browser from auto-dark-styling unstyled form controls */
+  }
+  *{box-sizing:border-box;}
+  html{ color-scheme: light; background:var(--paper); }
+  body{
+    margin:0;
+    font-family:var(--sans);
+    background:var(--paper);
+    color:var(--ink);
+  }
+  input, select, textarea, button{ color-scheme: light; }
+  #antd-load-error{
+    display:none; background:#fff3f2; border:1px solid #f3a2a2; color:#8a1f1f;
+    padding:16px 18px; border-radius:10px; font-size:13px; line-height:1.5; margin-bottom:16px;
+  }
+  #antd-load-error code{ background:#fde2e2; padding:1px 5px; border-radius:4px; }
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 32px; border-bottom:1px solid var(--line);
+    background:#fff;
+    position:sticky; top:0; z-index:20;
+  }
+  .brand{ font-weight:700; letter-spacing:-0.02em; font-size:18px; }
+  .brand span{ color:var(--accent); }
+  .tabbar{ display:flex; gap:6px; }
+  .tabbtn{
+    border:1px solid var(--line); background:#fff; padding:8px 14px;
+    font-size:13px; border-radius:8px; cursor:pointer; color:var(--ink);
+  }
+  .tabbtn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+
+  .wrap{ max-width:880px; margin:0 auto; padding:32px 20px 90px; }
+  .panel{
+    background:#fff; border:1px solid var(--line); border-radius:14px;
+    padding:28px; margin-bottom:20px;
+  }
+  .panel h2{ margin:0 0 4px; font-size:16px; }
+  .panel .sub{ margin:0 0 18px; font-size:13px; color:#6b7280; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:640px){ .grid2{ grid-template-columns:1fr; } }
+
+  .field-note{ font-size:11px; color:#9ca3af; margin-top:4px; }
+
+  /* ---- Vanilla / "Material-style" floating label inputs ---- */
+  .mfield{ position:relative; margin-bottom:22px; }
+  .mfield input, .mfield textarea, .mfield select{
+    width:100%; padding:14px 12px 8px; border:none; border-bottom:2px solid var(--line);
+    background:#fafafa; font-size:14px; border-radius:6px 6px 0 0; font-family:var(--sans);
+    outline:none;
+  }
+  .mfield textarea{ resize:vertical; min-height:70px; }
+  .mfield input:focus, .mfield textarea:focus{ border-bottom-color:var(--accent); background:#f2f4fc; }
+  .mfield label{
+    position:absolute; left:12px; top:14px; font-size:14px; color:#8a8f98;
+    pointer-events:none; transition:all .15s ease;
+    background:transparent;
+  }
+  .mfield input:focus + label,
+  .mfield input:not(:placeholder-shown) + label,
+  .mfield textarea:focus + label,
+  .mfield textarea:not(:placeholder-shown) + label{
+    top:2px; font-size:10.5px; color:var(--accent); letter-spacing:.03em; text-transform:uppercase;
+  }
+  .mfield input::placeholder, .mfield textarea::placeholder{ color:transparent; }
+
+  /* OTP boxes */
+  .otp-row{ display:flex; gap:8px; }
+  .otp-row input{
+    width:44px; height:52px; text-align:center; font-size:20px; border-radius:8px;
+    border:1px solid var(--line); background:#fafafa; font-family:var(--mono);
+  }
+  .otp-row input:focus{ outline:2px solid var(--accent); border-color:var(--accent); }
+
+  /* Custom checkbox pills (non-native look) */
+  .pillgroup{ display:flex; flex-wrap:wrap; gap:8px; }
+  .pill{
+    border:1px solid var(--line); border-radius:999px; padding:7px 14px; font-size:13px;
+    cursor:pointer; user-select:none; background:#fff;
+  }
+  .pill.on{ background:var(--accent); color:#fff; border-color:var(--accent); }
+
+  /* Custom range slider row */
+  .rangewrap{ display:flex; align-items:center; gap:12px; }
+  .rangewrap input[type=range]{ flex:1; }
+  .rangeval{ font-family:var(--mono); font-size:13px; width:42px; text-align:right; }
+
+  /* signature pad */
+  canvas#sigpad{
+    width:100%; height:140px; border:1px dashed var(--line); border-radius:8px; background:#fdfcf9; touch-action:none;
+  }
+  .sigbar{ display:flex; justify-content:space-between; margin-top:6px; }
+  .sigbar button{
+    border:1px solid var(--line); background:#fff; padding:5px 10px; border-radius:6px;
+    font-size:12px; cursor:pointer;
+  }
+
+  /* shadow host frame */
+  .shadow-host-frame{ border:1px solid var(--line); border-radius:10px; padding:14px; background:#fbfaf7; }
+
+  iframe.embedded-form{ width:100%; height:230px; border:1px solid var(--line); border-radius:10px; }
+
+  .submit-row{ display:flex; justify-content:flex-end; gap:10px; margin-top:8px; }
+  .btn{ padding:10px 22px; border-radius:8px; font-size:14px; cursor:pointer; border:1px solid var(--ink); }
+  .btn.primary{ background:var(--ink); color:#fff; }
+  .btn.ghost{ background:#fff; color:var(--ink); }
+
+  .status-msg{ font-size:13px; padding:10px 14px; border-radius:8px; background:var(--accent-soft); color:var(--accent); display:none; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">Formulate<span>.test</span></div>
+  <div class="tabbar" id="tabbar"></div>
+</div>
+
+<div class="wrap">
+  <div id="antd-load-error">
+    <strong>The Ant Design bundle didn't load.</strong> This test page pulls React and AntD live from a CDN
+    (<code>unpkg.com</code>), so it needs an active internet connection each time you open it — it won't work fully offline
+    or behind a network that blocks unpkg.com. Open your browser console (F12) to see the failed request, or switch to the
+    "Gov-style / Vanilla" tab above, which needs no CDN at all.
+  </div>
+  <div id="antd-root"></div>
+  <div id="vanilla-root" style="display:none;"></div>
+</div>
+
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+const {
+  Form, Input, Select, DatePicker, Radio, Checkbox, Upload, Button,
+  Slider, Steps, Cascader, InputNumber, TreeSelect, message, ConfigProvider
+} = antd;
+
+const NATIONALITIES = ["Indian","American","British","Canadian","Australian","German","French","Japanese","Brazilian","South African","Emirati","Singaporean"];
+const COUNTRIES = {
+  "India": ["Rajasthan","Maharashtra","Delhi","Karnataka","Tamil Nadu"],
+  "United States": ["California","Texas","New York","Florida","Washington"],
+  "United Kingdom": ["England","Scotland","Wales","Northern Ireland"],
+  "Canada": ["Ontario","Quebec","British Columbia","Alberta"]
+};
+const SKILLS = ["JavaScript","Python","React","Node.js","SQL","Figma","Excel","Public Speaking","Data Analysis","Project Management","AutoCAD","Salesforce"];
+
+function StepPersonal(){
+  return (
+    <div className="grid2">
+      <Form.Item name="fullName" label="Full name" rules={[{required:true}]}>
+        <Input placeholder="e.g. Aditi Sharma" autoComplete="name" />
+      </Form.Item>
+      <Form.Item name="email" label="Email address" rules={[{required:true, type:'email'}]}>
+        <Input placeholder="you@example.com" autoComplete="email" />
+      </Form.Item>
+      <Form.Item name="phone" label="Phone number" rules={[{required:true}]}>
+        <Input placeholder="+91 98xxxxxxxx" autoComplete="tel" />
+      </Form.Item>
+      <Form.Item name="dob" label="Date of birth" rules={[{required:true}]}>
+        <DatePicker style={{width:'100%'}} format="DD/MM/YYYY" placeholder="Select date" />
+      </Form.Item>
+      <Form.Item name="gender" label="Gender">
+        <Radio.Group>
+          <Radio value="female">Female</Radio>
+          <Radio value="male">Male</Radio>
+          <Radio value="other">Other</Radio>
+        </Radio.Group>
+      </Form.Item>
+      <Form.Item name="nationality" label="Nationality">
+        <Select showSearch placeholder="Start typing..." options={NATIONALITIES.map(n=>({value:n,label:n}))} />
+      </Form.Item>
+    </div>
+  );
+}
+
+function StepAddress(){
+  const [country, setCountry] = useState(null);
+  const stateOptions = country ? COUNTRIES[country].map(s=>({value:s,label:s})) : [];
+  return (
+    <div className="grid2">
+      <Form.Item name="country" label="Country" rules={[{required:true}]}>
+        <Select
+          placeholder="Select country"
+          options={Object.keys(COUNTRIES).map(c=>({value:c,label:c}))}
+          onChange={setCountry}
+        />
+      </Form.Item>
+      <Form.Item name="state" label="State / Province" rules={[{required:true}]}>
+        <Select placeholder={country ? "Select state" : "Choose a country first"} options={stateOptions} disabled={!country} />
+      </Form.Item>
+      <Form.Item name="city" label="City" rules={[{required:true}]}>
+        <Input placeholder="e.g. Jaipur" autoComplete="address-level2" />
+      </Form.Item>
+      <Form.Item name="zip" label="ZIP / Postal code" rules={[{required:true}]}>
+        <Input placeholder="e.g. 302001" autoComplete="postal-code" />
+      </Form.Item>
+      <Form.Item name="address" label="Street address" style={{gridColumn:'1 / -1'}}>
+        <Input.TextArea rows={2} placeholder="House no, street, locality" autoComplete="street-address" />
+      </Form.Item>
+    </div>
+  );
+}
+
+function StepEducation(){
+  return (
+    <Form.List name="education" initialValue={[{}]}>
+      {(fields, { add, remove }) => (
+        <div>
+          {fields.map((field, idx) => (
+            <div key={field.key} style={{border:'1px solid #eee', borderRadius:10, padding:16, marginBottom:14, position:'relative'}}>
+              <div style={{fontSize:12, color:'#9ca3af', marginBottom:8}}>Entry {idx+1}</div>
+              <div className="grid2">
+                <Form.Item {...field} name={[field.name, 'degree']} label="Degree / Program">
+                  <Input placeholder="e.g. B.Tech Computer Science" />
+                </Form.Item>
+                <Form.Item {...field} name={[field.name, 'institution']} label="Institution">
+                  <Input placeholder="e.g. MNIT Jaipur" />
+                </Form.Item>
+                <Form.Item {...field} name={[field.name, 'year']} label="Year of completion">
+                  <InputNumber style={{width:'100%'}} min={1980} max={2035} placeholder="2026" />
+                </Form.Item>
+                <Form.Item {...field} name={[field.name, 'grade']} label="Grade / GPA">
+                  <Input placeholder="e.g. 8.7 CGPA" />
+                </Form.Item>
+              </div>
+              {fields.length > 1 && (
+                <Button danger size="small" onClick={() => remove(field.name)} style={{position:'absolute', top:10, right:10}}>Remove</Button>
+              )}
+            </div>
+          ))}
+          <Button onClick={() => add()} style={{marginBottom:8}}>+ Add another qualification</Button>
+        </div>
+      )}
+    </Form.List>
+  );
+}
+
+function StepDocuments(){
+  return (
+    <div>
+      <div className="grid2">
+        <Form.Item name="resume" label="Resume / CV" valuePropName="fileList" getValueFromEvent={e => Array.isArray(e) ? e : e && e.fileList}>
+          <Upload beforeUpload={() => false} maxCount={1}>
+            <Button>Click to upload (.pdf)</Button>
+          </Upload>
+        </Form.Item>
+        <Form.Item name="photo" label="Passport photo" valuePropName="fileList" getValueFromEvent={e => Array.isArray(e) ? e : e && e.fileList}>
+          <Upload beforeUpload={() => false} maxCount={1} listType="picture">
+            <Button>Click to upload (.jpg/.png)</Button>
+          </Upload>
+        </Form.Item>
+      </div>
+      <Form.Item name="skills" label="Skills">
+        <Select mode="tags" placeholder="Pick or type your own" options={SKILLS.map(s=>({value:s,label:s}))} />
+      </Form.Item>
+      <Form.Item name="experienceYears" label={`Years of relevant experience`}>
+        <Slider min={0} max={20} marks={{0:'0',10:'10',20:'20+'}} />
+      </Form.Item>
+      <Form.Item name="bio" label="Short bio / cover note">
+        <Input.TextArea rows={4} placeholder="Tell us about yourself..." />
+      </Form.Item>
+    </div>
+  );
+}
+
+function StepReview({ onSubmitted }){
+  const [agree, setAgree] = useState(false);
+  return (
+    <div>
+      <p style={{fontSize:13, color:'#6b7280'}}>Review your details above using "Previous", then confirm below to finish the AntD portion of the test.</p>
+      <Form.Item name="agree" valuePropName="checked" rules={[{ validator: (_, v) => v ? Promise.resolve() : Promise.reject('Required') }]}>
+        <Checkbox onChange={e=>setAgree(e.target.checked)}>I confirm the information above is accurate</Checkbox>
+      </Form.Item>
+    </div>
+  );
+}
+
+function AntdWizard(){
+  const [form] = Form.useForm();
+  const [current, setCurrent] = useState(0);
+  const [done, setDone] = useState(false);
+
+  const steps = [
+    { title: 'Personal', content: <StepPersonal/> },
+    { title: 'Address', content: <StepAddress/> },
+    { title: 'Education', content: <StepEducation/> },
+    { title: 'Documents', content: <StepDocuments/> },
+    { title: 'Review', content: <StepReview/> },
+  ];
+
+  const next = async () => {
+    try { await form.validateFields(); setCurrent(c => Math.min(c+1, steps.length-1)); }
+    catch(e){ /* validation errors shown inline by antd */ }
+  };
+  const prev = () => setCurrent(c => Math.max(c-1, 0));
+  const finish = async () => {
+    try { await form.validateFields(); setDone(true); }
+    catch(e){}
+  };
+
+  return (
+    <ConfigProvider>
+      <div className="panel">
+        <h2>Student &amp; Job Applicant Registration</h2>
+        <p className="sub">Multi-step form built with Ant Design v4 (React controlled inputs, moment-backed date picker, dynamic field lists).</p>
+        <Steps current={current} items={steps.map(s=>({title:s.title}))} style={{marginBottom:24}} size="small" />
+        <Form form={form} layout="vertical" initialValues={{ agree:false }}>
+          {steps[current].content}
+        </Form>
+        <div className="submit-row">
+          {current > 0 && <button type="button" className="btn ghost" onClick={prev}>Previous</button>}
+          {current < steps.length - 1 && <button type="button" className="btn primary" onClick={next}>Next</button>}
+          {current === steps.length - 1 && <button type="button" className="btn primary" onClick={finish}>Submit registration</button>}
+        </div>
+        <div className="status-msg" style={{display: done ? 'block' : 'none'}}>Registration captured (test-only, nothing was sent anywhere).</div>
+      </div>
+    </ConfigProvider>
+  );
+}
+
+try {
+  const rootEl = document.getElementById('antd-root');
+  ReactDOM.render(<AntdWizard/>, rootEl);
+  rootEl.dataset.rendered = "true";
+} catch (err) {
+  document.getElementById('antd-root').innerHTML =
+    '<div class="panel"><h2>AntD section failed to render</h2><p class="sub">' + err.message + '</p></div>';
+  console.error(err);
+}
+</script>
+
+<script>
+// ---------------------------------------------------------------
+// VANILLA / "material-style" section — non-React, plain DOM inputs,
+// plus an OTP grid, custom pill checkboxes, native range slider,
+// canvas signature pad, a Shadow DOM widget, and an embedded iframe.
+// ---------------------------------------------------------------
+function buildVanillaSection(){
+  const root = document.getElementById('vanilla-root');
+  root.innerHTML = `
+    <div class="panel">
+      <h2>Government-style Benefits Application</h2>
+      <p class="sub">Deliberately old-school markup: floating labels, autocomplete="off", OTP grid, pill toggles, canvas signature.</p>
+
+      <div class="grid2">
+        <div class="mfield">
+          <input type="text" id="v_name" placeholder=" " autocomplete="off" />
+          <label for="v_name">Applicant full legal name</label>
+        </div>
+        <div class="mfield">
+          <input type="text" id="v_aadhaar" placeholder=" " autocomplete="off" maxlength="12" />
+          <label for="v_aadhaar">National ID number</label>
+        </div>
+        <div class="mfield">
+          <input type="date" id="v_dob" placeholder=" " autocomplete="off" />
+          <label for="v_dob">Date of birth</label>
+        </div>
+        <div class="mfield">
+          <input type="text" id="v_income" placeholder=" " autocomplete="off" />
+          <label for="v_income">Annual household income</label>
+        </div>
+        <div class="mfield" style="grid-column:1 / -1;">
+          <textarea id="v_addr" placeholder=" " autocomplete="off"></textarea>
+          <label for="v_addr">Permanent address</label>
+        </div>
+      </div>
+
+      <div style="margin-bottom:20px;">
+        <div class="field-note" style="margin-bottom:6px;">Household members applying for (select all that apply)</div>
+        <div class="pillgroup" id="pillgroup">
+          ${["Self","Spouse","Child under 18","Dependent parent","Other dependent"].map(p=>`<div class="pill" data-val="${p}">${p}</div>`).join("")}
+        </div>
+      </div>
+
+      <div style="margin-bottom:22px;">
+        <div class="field-note" style="margin-bottom:6px;">Disability / assistance level (0 = none, 10 = full-time care)</div>
+        <div class="rangewrap">
+          <input type="range" id="v_range" min="0" max="10" value="0" />
+          <div class="rangeval" id="v_rangeval">0</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:22px;">
+        <div class="field-note" style="margin-bottom:6px;">One-time verification code (sent to registered mobile)</div>
+        <div class="otp-row" id="otp-row">
+          ${[0,1,2,3,4,5].map(i=>`<input inputmode="numeric" maxlength="1" data-idx="${i}" autocomplete="one-time-code" />`).join("")}
+        </div>
+      </div>
+
+      <div style="margin-bottom:22px;">
+        <div class="field-note" style="margin-bottom:6px;">Sign below to certify the above is true</div>
+        <canvas id="sigpad" width="800" height="140"></canvas>
+        <div class="sigbar">
+          <span class="field-note">Draw with mouse or touch</span>
+          <button type="button" id="clearSig">Clear</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom:8px;">
+        <div class="field-note" style="margin-bottom:6px;">Widget rendered inside a Shadow DOM (isolated from page styles/selectors)</div>
+        <div class="shadow-host-frame"><div id="shadow-host"></div></div>
+      </div>
+
+      <div style="margin-top:22px;">
+        <div class="field-note" style="margin-bottom:6px;">Third-party section rendered inside an &lt;iframe&gt; (separate document)</div>
+        <iframe class="embedded-form" id="embedded-frame"></iframe>
+      </div>
+
+      <div class="submit-row">
+        <button type="button" class="btn primary" id="vanillaSubmit">Submit application</button>
+      </div>
+      <div class="status-msg" id="vanillaStatus">Application captured (test-only, nothing was sent anywhere).</div>
+    </div>
+  `;
+
+  // pill toggles
+  document.querySelectorAll('#pillgroup .pill').forEach(p=>{
+    p.addEventListener('click', ()=> p.classList.toggle('on'));
+  });
+
+  // range slider live value
+  const range = document.getElementById('v_range');
+  const rangeVal = document.getElementById('v_rangeval');
+  range.addEventListener('input', ()=> rangeVal.textContent = range.value);
+
+  // OTP auto-advance
+  const otpInputs = Array.from(document.querySelectorAll('#otp-row input'));
+  otpInputs.forEach((el, i)=>{
+    el.addEventListener('input', ()=>{
+      el.value = el.value.replace(/[^0-9]/g,'').slice(0,1);
+      if(el.value && otpInputs[i+1]) otpInputs[i+1].focus();
+    });
+    el.addEventListener('keydown', (e)=>{
+      if(e.key === 'Backspace' && !el.value && otpInputs[i-1]) otpInputs[i-1].focus();
+    });
+  });
+
+  // signature pad
+  const canvas = document.getElementById('sigpad');
+  const ctx = canvas.getContext('2d');
+  let drawing = false, last = null;
+  function pos(e){
+    const r = canvas.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return { x: cx * (canvas.width / r.width), y: cy * (canvas.height / r.height) };
+  }
+  function start(e){ drawing = true; last = pos(e); }
+  function move(e){
+    if(!drawing) return;
+    const p = pos(e);
+    ctx.strokeStyle = '#1b1f23'; ctx.lineWidth = 2; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p; e.preventDefault();
+  }
+  function end(){ drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start);
+  canvas.addEventListener('touchmove', move, {passive:false});
+  canvas.addEventListener('touchend', end);
+  document.getElementById('clearSig').addEventListener('click', ()=> ctx.clearRect(0,0,canvas.width, canvas.height));
+
+  // Shadow DOM widget
+  const host = document.getElementById('shadow-host');
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `
+    <style>
+      .box{ font-family: system-ui, sans-serif; }
+      label{ display:block; font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#6b7280; margin-bottom:4px; }
+      input, select{ width:100%; padding:10px; border:1px solid #d8d2c4; border-radius:6px; font-size:14px; margin-bottom:10px; box-sizing:border-box; }
+    </style>
+    <div class="box">
+      <label for="s_email">Emergency contact email (shadow DOM field)</label>
+      <input type="email" id="s_email" autocomplete="off" />
+      <label for="s_rel">Relationship</label>
+      <select id="s_rel">
+        <option value="">Choose...</option>
+        <option>Parent</option>
+        <option>Sibling</option>
+        <option>Spouse</option>
+        <option>Friend</option>
+      </select>
+    </div>
+  `;
+
+  // iframe content (separate document — different DOM context)
+  const iframe = document.getElementById('embedded-frame');
+  const doc = iframe ? (iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document)) : null;
+  if (doc) {
+    doc.open();
+    doc.write(`
+    <html><head><style>
+      body{ font-family: system-ui, sans-serif; margin:14px; }
+      label{ display:block; font-size:11px; text-transform:uppercase; color:#6b7280; margin-bottom:4px; letter-spacing:.03em; }
+      input{ width:100%; padding:9px 10px; border:1px solid #d8d2c4; border-radius:6px; font-size:14px; margin-bottom:12px; box-sizing:border-box; }
+    </style></head>
+    <body>
+      <label for="ref_name">Referee name (inside iframe document)</label>
+      <input id="ref_name" autocomplete="off" />
+      <label for="ref_phone">Referee phone</label>
+      <input id="ref_phone" autocomplete="off" />
+    </body></html>
+    `);
+    doc.close();
+  }
+
+  document.getElementById('vanillaSubmit').addEventListener('click', (e)=>{
+    e.preventDefault();
+    document.getElementById('vanillaStatus').style.display = 'block';
+  });
+}
+buildVanillaSection();
+
+// ---------------- tab switching ----------------
+const tabbar = document.getElementById('tabbar');
+const tabs = [
+  { key: 'antd', label: 'AntD Wizard (React)', el: document.getElementById('antd-root') },
+  { key: 'vanilla', label: 'Gov-style / Vanilla', el: document.getElementById('vanilla-root') },
+];
+tabs.forEach((t, i)=>{
+  const btn = document.createElement('button');
+  btn.className = 'tabbtn' + (i===0 ? ' active' : '');
+  btn.textContent = t.label;
+  btn.addEventListener('click', ()=>{
+    tabs.forEach(tt => tt.el.style.display = 'none');
+    document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    t.el.style.display = 'block';
+  });
+  tabbar.appendChild(btn);
+});
+</script>
+</body>
+</html>

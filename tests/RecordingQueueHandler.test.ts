@@ -127,4 +127,42 @@ describe('RecordingQueueHandler Unit Tests', () => {
     expect(mockState.activeRecordingSteps).toHaveLength(1);
     expect(mockState.activeRecordingSteps[0].value).toBe('Hello');
   });
+
+  it('should merge consecutive DATEPICKER steps targeting the same field or parent/child selector path', async () => {
+    const mockState = {
+      isRecording: true,
+      activeRecordingSteps: [] as Step[],
+      activeRecordingUrl: 'http://localhost',
+      recordingId: 'rec-1'
+    };
+
+    vi.spyOn(StorageManager, 'getRecordingState').mockResolvedValue(mockState as any);
+    vi.spyOn(StorageManager, 'setRecordingState').mockResolvedValue(undefined);
+
+    const step1: Step = {
+      id: 'step-1',
+      action: Action.DATEPICKER,
+      selector: 'div#app > div > div:nth-of-type(3) > input',
+      selectorMeta: { cssPath: 'div#app > div > div:nth-of-type(3) > input', labelText: 'Start Date' },
+      pageId: 'page_1',
+      value: '04/12/2025'
+    };
+
+    const step2: Step = {
+      id: 'step-2',
+      action: Action.DATEPICKER,
+      selector: 'div#app > div > div:nth-of-type(3)',
+      selectorMeta: { cssPath: 'div#app > div > div:nth-of-type(3)', labelText: 'Start Date' },
+      pageId: 'page_1',
+      value: '2025-12-19'
+    };
+
+    RecordingQueueHandler.enqueueStep(step1);
+    RecordingQueueHandler.enqueueStep(step2);
+
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(mockState.activeRecordingSteps).toHaveLength(1);
+    expect(mockState.activeRecordingSteps[0].value).toBe('2025-12-19');
+  });
 });

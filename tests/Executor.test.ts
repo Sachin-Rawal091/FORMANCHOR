@@ -99,7 +99,7 @@ describe('Executor Unit Tests', () => {
     vi.spyOn(StorageManager, 'getRecordings').mockResolvedValue([mockRecording]);
     vi.spyOn(StorageManager, 'getExcelData').mockResolvedValue(mockExcelRows);
     vi.spyOn(StorageManager, 'setExcelData').mockResolvedValue(undefined);
-    vi.spyOn(StorageManager, 'addLogEntry').mockResolvedValue(undefined);
+    vi.spyOn(StorageManager, 'addLogEntries').mockResolvedValue(undefined);
 
     mockChrome.runtime.sendMessage.mockImplementation((msg: any, callback?: any) => {
       if (callback) {
@@ -206,7 +206,7 @@ describe('Executor Unit Tests', () => {
     vi.spyOn(StorageManager, 'getRecordings').mockResolvedValue([mockRecording]);
     vi.spyOn(StorageManager, 'getExcelData').mockResolvedValue(mockExcelRows);
     vi.spyOn(StorageManager, 'setExcelData').mockResolvedValue(undefined);
-    vi.spyOn(StorageManager, 'addLogEntry').mockResolvedValue(undefined);
+    vi.spyOn(StorageManager, 'addLogEntries').mockResolvedValue(undefined);
 
     // Mock first submission outcome as UNKNOWN, second as SUCCESS
     let runCount = 0;

@@ -47,16 +47,13 @@ describe('StateManager', () => {
       );
     });
 
-    it('should register session metadata on session init', async () => {
+    it('should NOT call addSessionMeta (popup handles that to avoid duplicate writes)', async () => {
       vi.spyOn(StorageManager, 'getExecutionState').mockResolvedValue(null);
       vi.spyOn(StorageManager, 'setExecutionState').mockResolvedValue(undefined);
       const spy = vi.spyOn(StorageManager, 'addSessionMeta').mockResolvedValue(undefined);
 
       await StateManager.initializeSession('sess-1', 10, 'recording-1');
-      expect(spy).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: 'sess-1',
-        recordingId: 'recording-1'
-      }));
+      expect(spy).not.toHaveBeenCalled();
     });
   });
 

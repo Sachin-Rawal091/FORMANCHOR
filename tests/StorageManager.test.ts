@@ -99,21 +99,22 @@ describe('StorageManager', () => {
   });
 
   describe('log retention', () => {
-    it('cleanupLogs should delete entries beyond logMaxEntries, oldest first', async () => {
-      await StorageManager.setUserSettings({ logMaxEntries: 3, logRetentionDays: 365 } as any);
-      for (let i = 0; i < 5; i++) {
-        await StorageManager.addLogEntry({
-          id: `log-${i}`, sessionId: 'sess-1', rowIndex: i, stepId: 's', action: 0 as any,
-          selector: 'x', result: 0 as any, status: 'FILLED', retryCount: 0, duration: 0,
-          timestamp: Date.now() - 5000 + i
-        } as any);
-      }
+    it('cleanupLogs should delete entries older than logRetentionDays', async () => {
+      await StorageManager.setUserSettings({ logRetentionDays: 30 } as any);
+      
+      const oldTime = Date.now() - (35 * 24 * 60 * 60 * 1000); // 35 days old
+      const newTime = Date.now() - (5 * 24 * 60 * 60 * 1000);  // 5 days old
+
+      await StorageManager.addLogEntries([
+        { id: 'log-old', sessionId: 'sess-1', rowIndex: 0, stepId: 's', action: 0 as any, selector: 'x', result: 0 as any, status: 'FILLED', retryCount: 0, duration: 0, timestamp: oldTime } as any,
+        { id: 'log-new', sessionId: 'sess-1', rowIndex: 1, stepId: 's', action: 0 as any, selector: 'x', result: 0 as any, status: 'FILLED', retryCount: 0, duration: 0, timestamp: newTime } as any
+      ]);
+
       await StorageManager.cleanupLogs();
       const remaining = await StorageManager.getLogs('sess-1', 0, 100);
-      expect(remaining.length).toBeLessThanOrEqual(3);
-      // the newest entries should have survived, not the oldest
-      expect(remaining.some(l => l.id === 'log-4')).toBe(true);
-      expect(remaining.some(l => l.id === 'log-0')).toBe(false);
+      
+      expect(remaining.length).toBe(1);
+      expect(remaining[0].id).toBe('log-new');
     });
   });
 });

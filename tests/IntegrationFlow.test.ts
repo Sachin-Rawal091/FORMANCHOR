@@ -66,9 +66,9 @@ describe('Integration Flow - Record to Execution Loop', () => {
           });
           return true;
         }
-        if (msg.type === MessageType.ADD_LOG_ENTRY) {
+        if (msg.type === MessageType.ADD_LOG_BATCH) {
           import('../src/storage/StorageManager').then(({ StorageManager }) => {
-            StorageManager.addLogEntry(msg.payload.entry).then(() => {
+            StorageManager.addLogEntries(msg.payload.entries).then(() => {
               callback({ success: true });
             });
           });
@@ -222,7 +222,7 @@ describe('Integration Flow - Record to Execution Loop', () => {
     vi.spyOn(StorageManager, 'getRecordings').mockResolvedValue([mockRecording]);
     vi.spyOn(StorageManager, 'getExcelData').mockResolvedValue(mockExcelRows);
     const saveExcelSpy = vi.spyOn(StorageManager, 'setExcelData').mockResolvedValue(undefined);
-    const addLogSpy = vi.spyOn(StorageManager, 'addLogEntry').mockResolvedValue(undefined);
+    const addLogSpy = vi.spyOn(StorageManager, 'addLogEntries').mockResolvedValue(undefined);
 
     // Switch back to real timers for Execution Phase (async executors rely on actual tick timing)
     vi.useRealTimers();

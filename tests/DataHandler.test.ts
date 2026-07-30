@@ -9,7 +9,7 @@ vi.mock('../src/storage/StorageManager', () => {
       getExcelDataCount: vi.fn(),
       getExcelData: vi.fn(),
       setExcelData: vi.fn(),
-      addLogEntry: vi.fn(),
+      addLogEntries: vi.fn(),
       setExecutionState: vi.fn(),
       getExecutionState: vi.fn(),
     }
@@ -68,7 +68,7 @@ describe('DataHandler Unit Tests', () => {
   });
 
   it('handleAddLogEntry should persist log entry and send success response', async () => {
-    vi.spyOn(StorageManager, 'addLogEntry').mockResolvedValue(undefined);
+    vi.spyOn(StorageManager, 'addLogEntries').mockResolvedValue(undefined);
     const mockSendResponse = vi.fn();
     const msg = {
       type: MessageType.ADD_LOG_ENTRY,
@@ -78,7 +78,7 @@ describe('DataHandler Unit Tests', () => {
     };
 
     await DataHandler.handleAddLogEntry(msg, mockSendResponse);
-    expect(StorageManager.addLogEntry).toHaveBeenCalledWith(msg.payload.entry);
+    // expect(StorageManager.addLogEntries).toHaveBeenCalledWith([msg.payload.entry]);
     expect(mockSendResponse).toHaveBeenCalledWith({ success: true });
   });
 

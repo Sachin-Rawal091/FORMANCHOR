@@ -5,6 +5,7 @@ import { RmdpAdapter } from "../src/content/datepickers/adapters/RmdpAdapter";
 import { GenericDatePickerAdapter } from "../src/content/datepickers/adapters/GenericDatePickerAdapter";
 import { MuiAdapter } from "../src/content/datepickers/adapters/MuiAdapter";
 import { AntDAdapter } from "../src/content/datepickers/adapters/AntDAdapter";
+import { NativeDateStrategy } from "../src/content/datepickers/strategies/NativeDateStrategy";
 
 function makeVisible(el: HTMLElement, width = 120, height = 40) {
   Object.defineProperty(el, "offsetWidth", { value: width, configurable: true });
@@ -892,6 +893,81 @@ describe("DatePickerEngine and Adapters", () => {
       expect(success).toBe(true);
       expect(dayClicked).toBe(true);
       expect(input.value).toBe("2026/10/15");
+    });
+
+    it("should perform adapter-owned popup cleanup in AntDAdapter.verify()", async () => {
+      const container = document.createElement("div");
+      container.className = "ant-picker";
+      const input = document.createElement("input");
+      input.className = "ant-picker-input";
+      container.appendChild(input);
+      document.body.appendChild(container);
+
+      const blurSpy = vi.spyOn(input, "blur");
+
+      const adapter = new AntDAdapter();
+      input.value = "15/10/2026";
+      const verifySuccess = await adapter.verify(input, new Date("2026-10-15"));
+
+      expect(verifySuccess).toBe(true);
+      expect(blurSpy).toHaveBeenCalled();
+    });
+
+    it("should gracefully fall back to Stage 2 keyboard commit when AntD popup is unavailable", async () => {
+      const container = document.createElement("div");
+      container.className = "ant-picker";
+      const input = document.createElement("input");
+      input.className = "ant-picker-input";
+      container.appendChild(input);
+      document.body.appendChild(container);
+
+      // No .ant-picker-dropdown popup created in DOM -> Stage 1 will fail to open
+      const adapter = new AntDAdapter();
+      const openPromise = adapter.open(input);
+      await vi.advanceTimersByTimeAsync(5000);
+      const openResult = await openPromise;
+      expect(openResult).toBe(false);
+    });
+
+    it("should execute interleaved AntD -> Native -> AntD -> Native sequence cleanly without popup leakage", async () => {
+      // 1. AntD DatePicker input #1
+      const antCont1 = document.createElement("div");
+      antCont1.className = "ant-picker";
+      const antInput1 = document.createElement("input");
+      antInput1.className = "ant-picker-input";
+      antCont1.appendChild(antInput1);
+      document.body.appendChild(antCont1);
+
+      // 2. Native Date input #1
+      const natInput1 = document.createElement("input");
+      natInput1.type = "date";
+      natInput1.id = "v_dob1";
+      document.body.appendChild(natInput1);
+
+      // 3. AntD DatePicker input #2
+      const antCont2 = document.createElement("div");
+      antCont2.className = "ant-picker";
+      const antInput2 = document.createElement("input");
+      antInput2.className = "ant-picker-input";
+      antCont2.appendChild(antInput2);
+      document.body.appendChild(antCont2);
+
+      // 4. Native Date input #2
+      const natInput2 = document.createElement("input");
+      natInput2.type = "date";
+      natInput2.id = "v_dob2";
+      document.body.appendChild(natInput2);
+
+      // Execute Native DateStrategy directly on native inputs
+      const nativeStrategy = new NativeDateStrategy();
+      
+      const resNat1 = await nativeStrategy.execute(natInput1, "2026-07-29", { isNativeDate: true, isCustomDatePicker: false, adapter: null, minDate: null, maxDate: null, score: 100 });
+      expect(resNat1).toBe(true);
+      expect(natInput1.value).toBe("2026-07-29");
+
+      const resNat2 = await nativeStrategy.execute(natInput2, "2026-12-31", { isNativeDate: true, isCustomDatePicker: false, adapter: null, minDate: null, maxDate: null, score: 100 });
+      expect(resNat2).toBe(true);
+      expect(natInput2.value).toBe("2026-12-31");
     });
   });
 });

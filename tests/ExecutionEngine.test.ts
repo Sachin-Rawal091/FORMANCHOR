@@ -174,6 +174,12 @@ describe('ExecutionEngine.executeAction', () => {
     document.body.appendChild(sel);
     const setSpy = vi.spyOn(domUtils, 'setSelectValue').mockImplementation((el, val) => {
       (el as HTMLSelectElement).value = val;
+      return {
+        option: (el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex],
+        strategy: 'EXACT',
+        confidence: 100,
+        matchedText: val
+      };
     });
     const waitSpy = vi.spyOn(SmartWaitEngine, 'waitForDOMStability').mockResolvedValue(true as any);
     await ExecutionEngine.executeAction(makeStep({ action: Action.SELECT, selectorMeta: {}, selector: '' }), makeSelectorResult(sel), 'option-value');
