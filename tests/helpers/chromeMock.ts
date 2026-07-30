@@ -24,16 +24,20 @@ export function setupChromeMocks(): void {
   (globalThis as any).chrome = {
     storage: {
       session: {
-        get: async (keys: string | string[] | Record<string, unknown>) => {
-          if (typeof keys === 'string') {
-            return { [keys]: sessionStore[keys] };
+        get: (keys: any, callback?: (res: any) => void) => {
+          let res: Record<string, unknown> = {};
+          if (keys === null) res = { ...sessionStore };
+          else if (typeof keys === 'string') {
+            res = { [keys]: sessionStore[keys] };
+          } else if (Array.isArray(keys)) {
+            res = Object.fromEntries(keys.map(k => [k, sessionStore[k]]));
+          } else if (keys) {
+            res = Object.fromEntries(
+              Object.keys(keys).map(k => [k, sessionStore[k] ?? (keys as Record<string, unknown>)[k]])
+            );
           }
-          if (Array.isArray(keys)) {
-            return Object.fromEntries(keys.map(k => [k, sessionStore[k]]));
-          }
-          return Object.fromEntries(
-            Object.keys(keys).map(k => [k, sessionStore[k] ?? (keys as Record<string, unknown>)[k]])
-          );
+          if (typeof callback === 'function') callback(res);
+          return Promise.resolve(res);
         },
         set: async (items: Record<string, unknown>) => {
           Object.assign(sessionStore, items);
@@ -47,16 +51,20 @@ export function setupChromeMocks(): void {
         },
       },
       local: {
-        get: async (keys: string | string[] | Record<string, unknown>) => {
-          if (typeof keys === 'string') {
-            return { [keys]: localStore[keys] };
+        get: (keys: any, callback?: (res: any) => void) => {
+          let res: Record<string, unknown> = {};
+          if (keys === null) res = { ...localStore };
+          else if (typeof keys === 'string') {
+            res = { [keys]: localStore[keys] };
+          } else if (Array.isArray(keys)) {
+            res = Object.fromEntries(keys.map(k => [k, localStore[k]]));
+          } else if (keys) {
+            res = Object.fromEntries(
+              Object.keys(keys).map(k => [k, localStore[k] ?? (keys as Record<string, unknown>)[k]])
+            );
           }
-          if (Array.isArray(keys)) {
-            return Object.fromEntries(keys.map(k => [k, localStore[k]]));
-          }
-          return Object.fromEntries(
-            Object.keys(keys).map(k => [k, localStore[k] ?? (keys as Record<string, unknown>)[k]])
-          );
+          if (typeof callback === 'function') callback(res);
+          return Promise.resolve(res);
         },
         set: async (items: Record<string, unknown>) => {
           Object.assign(localStore, items);
