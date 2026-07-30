@@ -171,11 +171,10 @@ npm run build
 formanchor/
 ├── src/
 │   ├── background/        # Service worker — orchestration, routing
-│   ├── content/            # Content script — recorder, executor
-│   ├── datepicker/         # DatePicker adapter registry & engine
-│   ├── popup/               # React dashboard (Zustand domain slices)
-│   └── shared/              # Message contracts, shared types
-├── tests/                   # Unit tests — the authoritative interface contract
+│   ├── content/           # Content script — recorder, executor, datepickers
+│   ├── popup/             # React dashboard (Zustand domain slices)
+│   └── shared/            # Message contracts, shared types
+├── tests/                 # Unit tests — the authoritative interface contract
 ├── public/
 │   └── manifest.json
 └── vite.config.ts
