@@ -2,7 +2,7 @@
 
 # 🧭 FormAnchor
 
-### Resilient, multi-page form automation for Chrome — powered by recordings and Excel
+### Resilient, multi-page form automation for Chrome — powered by recordings and spreadsheets
 
 Automate the tedious stuff on real-world, dynamic, government-grade web forms.
 Record once. Feed it a spreadsheet. Let it fly across hundreds of rows and multi-page flows — with self-healing selectors that don't break the moment a site changes its DOM.
@@ -11,11 +11,28 @@ Record once. Feed it a spreadsheet. Let it fly across hundreds of rows and multi
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-Popup%20UI-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
+[![GitHub Stars](https://img.shields.io/github/stars/Sachin-Rawal091/FORMANCHOR?style=social)](https://github.com/Sachin-Rawal091/FORMANCHOR/stargazers)
 
 `Sachin-Rawal091/FORMANCHOR`
 
 </div>
+
+---
+
+## 📚 Table of Contents
+
+- [Why FormAnchor Exists](#why-formanchor-exists)
+- [Core Engines](#-core-engines)
+- [Architecture](#-architecture)
+- [Tech Stack](#-tech-stack)
+- [Getting Started](#-getting-started)
+- [Usage](#-usage)
+- [Project Structure](#-project-structure)
+- [Roadmap](#-roadmap)
+- [Contributing](#-contributing)
+- [Disclaimer](#️-disclaimer)
+- [License](#-license)
 
 ---
 
@@ -25,7 +42,7 @@ Record once. Feed it a spreadsheet. Let it fly across hundreds of rows and multi
 
 ![FormAnchor Demo — Record, Map, Execute, Done](docs/demo.gif)
 
-_Record a form once → Upload your Excel → Hit Run → Watch it fly through hundreds of rows._
+_Record a form once → Upload your spreadsheet → Hit Run → Watch it fly through hundreds of rows._
 
 </div>
 
@@ -38,7 +55,7 @@ Most "form filler" extensions are built for static HTML forms and die the moment
 FormAnchor is built for exactly that environment:
 
 - **Record** a real user session interacting with a form — clicks, inputs, date picker selections, page transitions.
-- **Map** each field to a column in an Excel sheet.
+- **Map** each field to a column in a spreadsheet.
 - **Replay** the recording once per row, across as many pages and sessions as the form requires — resuming cleanly even if a tab closes mid-flow.
 
 It's designed to survive the things that break naive automation: elements that mount late, selectors that go stale, network calls that haven't resolved yet, and third-party UI widgets (like custom date pickers) that don't behave like plain `<input>` fields.
@@ -56,7 +73,7 @@ FormAnchor isn't one script — it's a set of purpose-built subsystems that each
 | ⚙️ **Execution Engine**          | A step-based state machine that drives the replay, one deterministic step at a time                                                   |
 | 🔁 **Retry & Self-Heal System**  | Detects failed steps and retries with adjusted strategy before giving up                                                              |
 | 💾 **State Manager**             | Persists execution progress so multi-page "Save & Continue" flows can pause, resume, or survive a browser restart                     |
-| 📡 **Response Detection Engine** | Understands what the page did after an action — success, validation error, navigation, or silent failure                              |
+| 📡 **Response Detection Engine** | Understands what the page did after an action — success, validation error, navigation, CAPTCHA, or silent failure                     |
 | 🗓 **DatePicker Engine**         | Adapter-based registry (`RmdpAdapter`, `MuiAdapter`, `AntDAdapter`, generic fallback) for handling non-native date widgets            |
 | 📝 **Logging System**            | Structured, queryable logs of every step, retry, and decision — built for debugging production runs, not just demos                   |
 
@@ -72,7 +89,7 @@ FormAnchor works within Manifest V3's constraints deliberately — the service w
 flowchart TD
     subgraph Popup["🖥️ Popup Dashboard (React + Zustand)"]
         UI[Recording / Execution Controls]
-        XLS[Excel Import — SheetJS]
+        XLS[Spreadsheet Import — SheetJS]
     end
 
     subgraph SW["⚙️ Service Worker (Orchestrator)"]
@@ -119,7 +136,7 @@ flowchart TD
 - **React + Zustand** — popup dashboard UI, domain-sliced state
 - **Vite + @crxjs/vite-plugin** — MV3-aware build tooling with working HMR
 - **IndexedDB** (via a custom `StorageManager`) + `chrome.storage` — recordings, run history, resumable state
-- **SheetJS** — Excel (`.xlsx`) parsing for input data
+- **SheetJS** — spreadsheet parsing supporting `.xlsx`, `.xls`, `.csv`, and `.ods` input files
 - **Manifest V3** — service worker + content scripts, no persistent background page
 
 ---
@@ -159,7 +176,7 @@ npm run build
 ## 📋 Usage
 
 1. **Record** — Open the FormAnchor popup on the target form and start a recording. Interact with the form exactly as a normal user would, including any multi-page "Save & Continue" steps.
-2. **Map fields to Excel** — Import your `.xlsx` file and map each recorded field to a spreadsheet column.
+2. **Map fields to your spreadsheet** — Import your `.xlsx`, `.xls`, `.csv`, or `.ods` file and map each recorded field to a column.
 3. **Run** — Start execution. FormAnchor replays the recording once per row, using the Selector, Wait, and Retry engines to handle timing and DOM variance automatically.
 4. **Monitor & resume** — Track progress from the dashboard. If a run is interrupted, resume from the last confirmed step rather than starting over.
 
