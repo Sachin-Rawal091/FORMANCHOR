@@ -19,6 +19,8 @@ Record once. Feed it a spreadsheet. Let it fly across hundreds of rows and multi
 </div>
 
 ---
+📖 See [USER_GUIDE.md](./USER_GUIDE.md) for step-by-step installation and usage instructions.
+
 
 ## 📚 Table of Contents
 
