@@ -52,6 +52,7 @@ export interface SelectorMeta {
   role?: string;
   cssPath?: string;
   xpath?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface SelectorResult {
@@ -153,6 +154,8 @@ export interface LogEntry {
   retryCount: number;
   duration: number;
   selectorStrategy?: SelectorStrategy;
+  sequence?: number;
+  batchIndex?: number;
 }
 
 export enum StepResult {
@@ -165,6 +168,7 @@ export type LogStatus =
   | "FILLED"
   | "FILLED_DEFAULT"
   | "FILLED_COERCED"
+  | "FILLED_READONLY"
   | "STEP_SKIPPED"
   | "WARN"
   | "ROW_SKIPPED"
@@ -189,11 +193,8 @@ export enum MessageType {
   RESUME_EXECUTION,
   ABORT_EXECUTION,
   RECORDING_EVENT,
-  EXECUTION_PROGRESS,
   EXECUTION_COMPLETE,
-  STEP_RESULT,
   STATE_UPDATE,
-  ERROR_REPORT,
   CAPTCHA_DETECTED,
   PAGE_NAVIGATED,
   GET_STATUS,
@@ -208,6 +209,9 @@ export enum MessageType {
   GET_SESSION_METAS,
   EXECUTION_CONFIRMED,
   ADD_SESSION_META,
+  ADD_LOG_BATCH,
+  LOGS_UPDATED,
+  INJECT_NETWORK_PROXY,
 }
 
 export interface RecordingState {
@@ -221,7 +225,6 @@ export interface UserSettings {
   stepDelay?: number;
   maxStepRetries?: number;
   waitElementTimeout?: number;
-  logMaxEntries?: number;
   logRetentionDays?: number;
   theme?: 'light' | 'dark';
 }
@@ -231,6 +234,7 @@ export interface SessionMeta {
   sessionId: string;
   timestamp: number;
   recordingId: string;
+  totalRows?: number;
 }
 
 export interface FileBlob {
