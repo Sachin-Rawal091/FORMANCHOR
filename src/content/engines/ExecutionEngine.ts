@@ -1,5 +1,5 @@
 import { Step, Action, LogStatus, SelectorResult } from "../../types";
-import { setInputValue, setSelectValue, setCheckboxValue, dispatchEvents } from "../domUtils";
+import { setInputValue, setCheckboxValue, dispatchEvents } from "../domUtils";
 import { SmartWaitEngine } from "./SmartWaitEngine";
 import { WAIT_DOM_STABLE_TIMEOUT, WAIT_URL_CHANGE_TIMEOUT, CLOSE_DISMISS_REGEX, SUBMIT_KEYWORD_REGEX } from "../../shared/constants";
 import { StorageManager } from "../../storage/StorageManager";
@@ -10,6 +10,8 @@ import { DatePickerRegistry } from "../datepickers/DatePickerRegistry";
 import { InputNormalizer } from "../datepickers/InputNormalizer";
 import { FieldDetector } from "../datepickers/FieldDetector";
 import { StrategyResolver } from "../datepickers/StrategyResolver";
+import { SelectStrategyResolver } from "./SelectStrategyResolver";
+import { DateParser } from "../datepickers/DateParser";
 
 // Exposed so tests can disable the real-world settle/verification wait without
 // ExecutionEngine needing to know it's running under a test runner. Defaults to
@@ -39,7 +41,7 @@ export class ExecutionEngine {
   /**
    * Resolves the variable from Excel row data and handles the 8 missing-value scenarios.
    */
-  static resolveAndValidateValue(step: Step, rowData: Record<string, any>): ResolvedValueResult {
+  static resolveAndValidateValue(step: Step, rowData: Record<string, any>, allRows?: Record<string, any>[]): ResolvedValueResult {
     if (!step.columnName) {
       // If no column mapping, just use step.value directly if present
       return {
@@ -107,24 +109,11 @@ export class ExecutionEngine {
           status = "WARN";
         }
       } else if (step.expectedType === "date") {
-        let parsedDate: Date | null = null;
-        
-        // 1. Check if the value is an Excel numeric date serial
-        const numValue = Number(rawValue);
-        if (typeof rawValue !== 'boolean' && !isNaN(numValue) && numValue > 10000 && numValue < 100000) {
-          parsedDate = parseExcelSerialDate(numValue);
-        }
-        
-        // 2. Parse from date string or Date object
-        if (!parsedDate) {
+        const formatHint = (step.columnName && allRows) ? DateParser.inferColumnDateFormat(allRows, step.columnName) : undefined;
+        const parsed = DateParser.parse(rawValue, formatHint || undefined);
+        if (parsed.valid) {
           const formatSample = step.defaultValue || step.value || '';
-          parsedDate = rawValue instanceof Date ? rawValue : parseDateString(stringValue, formatSample);
-        }
-
-        if (parsedDate && !isNaN(parsedDate.getTime())) {
-          // Use step.defaultValue as the format sample (reverting to step.value as fallback)
-          const formatSample = step.defaultValue || step.value || '';
-          stringValue = formatDate(parsedDate, formatSample);
+          stringValue = DateParser.format(parsed, formatSample);
           status = "FILLED_COERCED";
         } else {
           status = "WARN";
@@ -208,31 +197,46 @@ export class ExecutionEngine {
         break;
       }
 
-      case Action.SELECT:
-        if (el instanceof HTMLSelectElement) {
-          const matchResult = setSelectValue(el, resolvedValue || "");
-          
-          if (matchResult) {
-            logger.info('ExecutionEngine', `Matched "${resolvedValue}" using strategy ${matchResult.strategy} (${matchResult.confidence}%) -> "${matchResult.matchedText}"`);
-          }
-
-          await SmartWaitEngine.waitForDOMStability(WAIT_DOM_STABLE_TIMEOUT).catch((err) => {
-            logger.debug('ExecutionEngine', `SELECT DOM stability wait timed out: ${err.message}`);
-          });
-          // BUG-101: Readback verification
-          if (resolvedValue && !el.value) {
-            throw new Error(`Select element remained unselected after fill attempt.`);
-          }
+      case Action.SELECT: {
+        const selectStrategy = SelectStrategyResolver.resolve(el);
+        if (selectStrategy) {
+          logger.info('ExecutionEngine', `Action.SELECT resolved strategy "${selectStrategy.name}"`);
+          await selectStrategy.execute(el, resolvedValue || "");
+        } else {
+          throw new Error(
+            `No select strategy matched for element <${el.tagName.toLowerCase()}> class="${el.className}"`
+          );
         }
         break;
+      }
 
-      case Action.SELECT_RADIO:
-        // Match radio by value attribute — scope to closest form/fieldset to avoid wrong-form matches
+      case Action.SELECT_RADIO: {
+        // Match radio by value or label text — supports both native HTML and AntD/React radio groups
         const nameAttr = el.getAttribute("name");
-        if (nameAttr && resolvedValue) {
-          const escapedName = CSS.escape(nameAttr);
-          const scope = el.closest('form, fieldset') || document;
-          const radios = Array.from(scope.querySelectorAll(`input[type="radio"][name="${escapedName}"]`)) as HTMLInputElement[];
+        if (resolvedValue) {
+          let radios: HTMLInputElement[] = [];
+
+          if (nameAttr) {
+            // Primary path: native HTML radio groups with name attribute
+            const escapedName = CSS.escape(nameAttr);
+            const scope = el.closest('form, fieldset') || document;
+            radios = Array.from(scope.querySelectorAll(`input[type="radio"][name="${escapedName}"]`)) as HTMLInputElement[];
+          } else {
+            // Fallback path: AntD / React radio groups without name attribute
+            // Walk up to the nearest radio group container
+            const radioGroup = el.closest('.ant-radio-group, [role="radiogroup"]');
+            if (radioGroup) {
+              radios = Array.from(radioGroup.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+              logger.debug('ExecutionEngine', `AntD radio fallback: found ${radios.length} radios in group container`);
+            } else {
+              // Last resort: try the parent form/fieldset
+              const scope = el.closest('form, fieldset') || document;
+              radios = Array.from(scope.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+              logger.debug('ExecutionEngine', `Radio fallback (no group container): found ${radios.length} radios in scope`);
+            }
+          }
+
+          // Shared matching logic: match by value attribute or by label text
           const targetRadio = radios.find(r => {
             const valMatch = r.value.trim().toLowerCase() === resolvedValue.trim().toLowerCase();
             if (valMatch) return true;
@@ -253,7 +257,10 @@ export class ExecutionEngine {
             }
             return labelText.trim().toLowerCase() === resolvedValue.trim().toLowerCase();
           });
+
           if (targetRadio) {
+            const clickTarget = targetRadio.closest('label') || targetRadio;
+            dispatchEvents(clickTarget, ["mousedown", "mouseup", "click"]);
             setCheckboxValue(targetRadio, true);
             // BUG-101: Readback verification
             if (!targetRadio.checked) {
@@ -264,6 +271,7 @@ export class ExecutionEngine {
           }
         }
         break;
+      }
 
       case Action.TOGGLE_CHECKBOX:
         {
@@ -536,11 +544,11 @@ export class ExecutionEngine {
   static async fallbackDatePickerFill(el: HTMLElement, resolvedValue: string): Promise<void> {
     dispatchEvents(el, ["mousedown", "mouseup", "click"]);
     let val = resolvedValue;
-    const dateObj = parseDateString(val);
-    if (dateObj && !isNaN(dateObj.getTime())) {
-      const detectedFormat = detectElementDateFormat(el);
+    const parsed = DateParser.parse(val);
+    if (parsed.valid) {
+      const detectedFormat = DateParser.detectElementDateFormat(el);
       if (detectedFormat) {
-        val = formatDate(dateObj, detectedFormat);
+        val = DateParser.format(parsed, detectedFormat);
       }
     }
     
@@ -593,216 +601,5 @@ export class ExecutionEngine {
 /**
  * Converts an Excel numeric serial date (e.g. 45789) to a JavaScript Date object.
  */
-function parseExcelSerialDate(serial: number): Date | null {
-  // Excel base date is Dec 30, 1899 due to 1900 leap year bug
-  const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-  const msInDay = 24 * 60 * 60 * 1000;
-  const parsed = new Date(excelEpoch.getTime() + serial * msInDay);
-  return isNaN(parsed.getTime()) ? null : parsed;
-}
 
-/**
- * Checks if a format string suggests Day-first (DD/MM) rather than Month-first (MM/DD).
- */
-function isDDMMFormat(formatStr: string): boolean {
-  const clean = formatStr.toLowerCase().trim();
-  const separator = clean.includes('/') ? '/' : clean.includes('-') ? '-' : clean.includes('.') ? '.' : '';
-  if (!separator) return true; // default fallback
-
-  const parts = clean.split(separator);
-  if (parts.length !== 3) return true; // default fallback
-
-  // If first part is explicitly 'd' or a number > 12, it is DD/MM/YYYY
-  if (parts[0].includes('d') || Number(parts[0]) > 12) {
-    return true;
-  }
-  // If second part is 'd' or a number > 12, it is MM/DD/YYYY
-  if (parts[1].includes('d') || Number(parts[1]) > 12) {
-    return false;
-  }
-  // If first part is 'm', it is MM/DD/YYYY
-  if (parts[0].includes('m')) {
-    return false;
-  }
-  // If second part is 'm', it is DD/MM/YYYY
-  if (parts[1].includes('m')) {
-    return true;
-  }
-
-  return true; // default fallback
-}
-
-/**
- * Parses date strings in various common formats (e.g. DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD).
- */
-function parseDateString(str: string, formatPreference?: string | null): Date | null {
-  if (!str) return null;
-  
-  // Try standard native parsing for ISO strings (containing 'T') or YYYY-MM-DD strings
-  const nativeParsed = new Date(str);
-  if (!isNaN(nativeParsed.getTime())) {
-    if (str.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(str)) {
-      return nativeParsed;
-    }
-  }
-  
-  const cleanStr = str.replace(/[^0-9\-/\.]/g, '').trim();
-  
-  let separator = '';
-  if (cleanStr.includes('/')) separator = '/';
-  else if (cleanStr.includes('-')) separator = '-';
-  else if (cleanStr.includes('.')) separator = '.';
-  
-  if (!separator) {
-    const parsed = new Date(cleanStr);
-    return isNaN(parsed.getTime()) ? null : parsed;
-  }
-  
-  const parts = cleanStr.split(separator);
-  if (parts.length !== 3) {
-    const parsed = new Date(cleanStr);
-    return isNaN(parsed.getTime()) ? null : parsed;
-  }
-  
-  const val1 = Number(parts[0]);
-  const val2 = Number(parts[1]);
-  const val3 = Number(parts[2]);
-  if (isNaN(val1) || isNaN(val2) || isNaN(val3)) {
-    const parsed = new Date(cleanStr);
-    return isNaN(parsed.getTime()) ? null : parsed;
-  }
-  
-  // Year is first: YYYY/MM/DD
-  if (parts[0].length === 4) {
-    return new Date(Date.UTC(val1, val2 - 1, val3));
-  }
-  
-  // Year is last
-  if (parts[2].length === 4) {
-    // DD/MM/YYYY vs MM/DD/YYYY
-    if (val1 > 12) {
-      return new Date(Date.UTC(val3, val2 - 1, val1));
-    }
-    if (val2 > 12) {
-      return new Date(Date.UTC(val3, val1 - 1, val2));
-    }
-    
-    // Both parts <= 12, use formatPreference if available
-    const isDDMM = formatPreference ? isDDMMFormat(formatPreference) : true;
-    if (isDDMM) {
-      return new Date(Date.UTC(val3, val2 - 1, val1)); // Day is val1, Month is val2
-    } else {
-      return new Date(Date.UTC(val3, val1 - 1, val2)); // Day is val2, Month is val1
-    }
-  }
-  
-  const parsed = new Date(cleanStr);
-  return isNaN(parsed.getTime()) ? null : parsed;
-}
-
-/**
- * Formats a Date object to match the exact string format of a sample value.
- */
-function formatDate(date: Date, formatSample?: string): string {
-  const yyyy = String(date.getUTCFullYear());
-  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const m = String(date.getUTCMonth() + 1);
-  const dd = String(date.getUTCDate()).padStart(2, '0');
-  const d = String(date.getUTCDate());
-
-  if (!formatSample || typeof formatSample !== 'string') {
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  const sampleClean = formatSample.replace(/[{}]/g, '').trim();
-  
-  // If the sample contains letters, it is a column placeholder (e.g. {{DMR-OPEN-DATE}}), not a date formatting template
-  if (/[a-zA-Z]/.test(sampleClean)) {
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  let separator = '';
-  if (formatSample.includes('/')) separator = '/';
-  else if (formatSample.includes('-')) separator = '-';
-  else if (formatSample.includes('.')) separator = '.';
-
-  if (!separator) {
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  const parts = sampleClean.split(separator);
-  if (parts.length !== 3) {
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  // Year is first: YYYY/MM/DD
-  if (parts[0].length === 4) {
-    const padMonth = parts[1].length === 2;
-    const padDay = parts[2].length === 2;
-    return `${yyyy}${separator}${padMonth ? mm : m}${separator}${padDay ? dd : d}`;
-  }
-
-  // Year is last: DD/MM/YYYY or MM/DD/YYYY
-  if (parts[2].length === 4) {
-    const pad1 = parts[0].length === 2;
-    const pad2 = parts[1].length === 2;
-    const val1 = Number(parts[0]);
-    const val2 = Number(parts[1]);
-
-    if (!isNaN(val1) && val1 > 12) {
-      return `${pad1 ? dd : d}${separator}${pad2 ? mm : m}${separator}${yyyy}`;
-    } else if (!isNaN(val2) && val2 > 12) {
-      return `${pad1 ? mm : m}${separator}${pad2 ? dd : d}${separator}${yyyy}`;
-    }
-    return `${pad1 ? dd : d}${separator}${pad2 ? mm : m}${separator}${yyyy}`;
-  }
-
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-/**
- * Detects the date format template of a DOM input element by checking its value, placeholder, other inputs on the page, or library fallbacks.
- */
-function detectElementDateFormat(el: HTMLElement): string | null {
-  if (!(el instanceof HTMLInputElement)) return null;
-
-  const getFormatFromInput = (input: HTMLInputElement): string | null => {
-    // 1. Check existing attribute value (e.g. value="13/05/2025")
-    const attrValue = input.getAttribute('value') || input.value;
-    if (attrValue && attrValue.trim() && !/[a-zA-Z]/.test(attrValue)) {
-      const cleanVal = attrValue.trim();
-      if (cleanVal.split(/[-/\.]/).length === 3) {
-        return cleanVal;
-      }
-    }
-    // 2. Check placeholder attribute
-    const placeholder = input.getAttribute('placeholder') || input.placeholder;
-    if (placeholder && placeholder.trim()) {
-      const cleanPlac = placeholder.replace(/[{}]/g, '').trim();
-      if (cleanPlac.split(/[-/\.]/).length === 3) {
-        return cleanPlac;
-      }
-    }
-    return null;
-  };
-
-  // 1. Try the current element first
-  const selfFormat = getFormatFromInput(el);
-  if (selfFormat) return selfFormat;
-
-  // 2. Try other date inputs on the same page (limit to first 20 inputs to prevent performance bottleneck)
-  const otherInputs = document.querySelectorAll('input.rmdp-input, input.datepicker, input.flatpickr-input, input[type="date"]') as NodeListOf<HTMLInputElement>;
-  const limit = Math.min(otherInputs.length, 20);
-  for (let i = 0; i < limit; i++) {
-    const format = getFormatFromInput(otherInputs[i]);
-    if (format) return format;
-  }
-
-  // 3. Fallback based on library class names
-  if (el.classList.contains('rmdp-input')) {
-    return "DD/MM/YYYY"; // React Multi Date Picker default format
-  }
-
-  return null;
-}
 

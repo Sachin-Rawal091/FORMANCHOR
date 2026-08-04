@@ -1,7 +1,10 @@
 import { Step, Action, SelectorMeta, FormPilotMessage, MessageType, ExecutionState, ExecutionStatus } from "../types";
-import { INPUT_DEBOUNCE_MS, DOUBLE_CLICK_WINDOW_MS, XPATH_MAX_DEPTH, SUBMIT_LATCH_SAFETY_MS } from "../shared/constants";
+import { INPUT_DEBOUNCE_MS, DOUBLE_CLICK_WINDOW_MS, XPATH_MAX_DEPTH, SUBMIT_LATCH_SAFETY_MS, CLOSE_DISMISS_REGEX, SUBMIT_KEYWORD_REGEX } from "../shared/constants";
 import { logger } from "../utils/logger";
 import { generateUUID } from "../utils/uuid";
+
+import { FieldDetector } from "./datepickers/FieldDetector";
+import { ActionFactory } from "./datepickers/ActionFactory";
 
 export class RecordingEngine {
   private isRecording = false;
@@ -11,11 +14,16 @@ export class RecordingEngine {
   private lastClickedElement: HTMLElement | null = null;
   private debounceTimers: WeakMap<HTMLElement, ReturnType<typeof setTimeout>> = new WeakMap();
   private activeTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+  private lastStepDedupeMap: Map<string | HTMLElement, { action: Action; timestamp: number }> = new Map();
   // BUG-NEW-1 fix: replaces the old lastButtonSubmitTime timestamp comparison.
   // true once a submit-type click has been recorded synchronously, until either
   // the correlated native submit event is observed or the safety timer clears it.
   private recentClickWasSubmit = false;
   private submitLatchSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+  // BUG-C fix: Track inputs whose value changes were already recorded by
+  // handleClickEvent's checkChanges() to prevent handleInputEvent from
+  // re-recording the same value change in the same interaction cycle.
+  private recentlyRecordedByClick: WeakSet<HTMLElement> = new WeakSet();
 
   constructor() {
     this.setupMessageListener();
@@ -86,6 +94,16 @@ export class RecordingEngine {
               this.recordingId = state.recordingId || "default";
               this.currentStepIndex = state.activeRecordingSteps ? state.activeRecordingSteps.length : 0;
               logger.info('Recorder', `Restored recording state. isRecording: true, recordingId: ${this.recordingId}, stepIndex: ${this.currentStepIndex}`);
+            } else {
+              this.isRecording = false;
+              if (chrome.storage?.local) {
+                chrome.storage.local.set({ isRecordingActive: false });
+              }
+            }
+          } else {
+            this.isRecording = false;
+            if (chrome.storage?.local) {
+              chrome.storage.local.set({ isRecordingActive: false });
             }
           }
         });
@@ -98,6 +116,7 @@ export class RecordingEngine {
   private setupDOMEventListeners() {
     // Standard actions
     document.addEventListener("click", (e) => this.handleClickEvent(e), true);
+    document.addEventListener("focusin", (e) => this.handleFocusEvent(e), true);
     document.addEventListener("input", (e) => this.handleInputEvent(e), true);
     document.addEventListener("change", (e) => this.handleChangeEvent(e), true);
     
@@ -153,10 +172,97 @@ export class RecordingEngine {
     (history.replaceState as any).__fpWrapped = true;
   }
 
+  private getEventTarget(e: Event): HTMLElement | null {
+    if (e.composedPath && e.composedPath().length > 0) {
+      return e.composedPath()[0] as HTMLElement;
+    }
+    return (e.target as HTMLElement) || null;
+  }
+
+  private isInsideAntSelectDropdown(el: HTMLElement): boolean {
+    return el.closest(
+      '.ant-select-dropdown, .ant-select-item, [class*="ant-select-dropdown"]'
+    ) !== null;
+  }
+
+  private getActiveComboboxForDropdown(dropdownOptionEl: HTMLElement): HTMLElement | null {
+    const dropdownContainer = dropdownOptionEl.closest('.ant-select-dropdown') as HTMLElement;
+    
+    // 1. Try ARIA ID association (aria-controls / aria-owns matching dropdown ID)
+    if (dropdownContainer?.id) {
+      const ariaMatch = document.querySelector(
+        `[aria-controls="${dropdownContainer.id}"], [aria-owns="${dropdownContainer.id}"]`
+      ) as HTMLElement;
+      if (ariaMatch) return ariaMatch;
+    }
+
+    // 2. Try .ant-select-open active container on page
+    const activeContainer = document.querySelector('.ant-select-open') as HTMLElement;
+    if (activeContainer) {
+      const input = activeContainer.querySelector('.ant-select-selection-search-input, input') as HTMLElement;
+      if (input) return input;
+    }
+
+    // 3. Active element fallback
+    if (document.activeElement?.closest('.ant-select')) {
+      return document.activeElement as HTMLElement;
+    }
+
+    return null;
+  }
+
+  private observeSelectionUpdate(combobox: HTMLElement, expectedText: string) {
+    const selectContainer = combobox.closest('.ant-select') as HTMLElement;
+    if (!selectContainer) {
+      this.addRecordedStep(Action.SELECT, combobox, expectedText);
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      const selectionItem = selectContainer.querySelector('.ant-select-selection-item');
+      if (selectionItem) {
+        const displayText = selectionItem.textContent?.trim() || expectedText;
+        observer.disconnect();
+        clearTimeout(safetyTimer);
+        this.addRecordedStep(Action.SELECT, combobox, displayText);
+      }
+    });
+
+    observer.observe(selectContainer, { childList: true, subtree: true, characterData: true });
+
+    const safetyTimer = setTimeout(() => {
+      observer.disconnect();
+      this.addRecordedStep(Action.SELECT, combobox, expectedText);
+    }, 2000);
+    this.activeTimers.add(safetyTimer);
+  }
+
+  private handleFocusEvent(e: FocusEvent) {
+    if (!this.isRecording || !e.isTrusted) return;
+    // focusin is used purely for active state tracking; steps are created on explicit user interactions
+  }  private getAllInputsDeep(root: ParentNode = document): (HTMLInputElement | HTMLTextAreaElement)[] {
+    const results: (HTMLInputElement | HTMLTextAreaElement)[] = [];
+    const walk = (node: ParentNode) => {
+      const inputs = node.querySelectorAll("input, textarea");
+      inputs.forEach((input) => {
+        if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+          results.push(input);
+        }
+      });
+      node.querySelectorAll("*").forEach((el) => {
+        if (el.shadowRoot) {
+          walk(el.shadowRoot);
+        }
+      });
+    };
+    walk(root);
+    return results;
+  }
+
   private handleClickEvent(e: MouseEvent) {
     if (!this.isRecording) return;
 
-    const el = e.target as HTMLElement;
+    const el = this.getEventTarget(e);
     if (!el) return;
 
     // Skip recording clicks on checkboxes, radios, or their associated labels/containers
@@ -169,36 +275,46 @@ export class RecordingEngine {
 
     const tagName = el.tagName.toLowerCase();
 
-    // Ignore normal value inputs but allow submit buttons/inputs to be clicked and recorded
-    if (tagName === "input" || tagName === "textarea") {
-      const typeAttr = el.getAttribute("type")?.toLowerCase() || "";
-      if (typeAttr !== "submit" && typeAttr !== "button" && typeAttr !== "image") {
-        return;
-      }
-    }
+    const interactiveTarget = el.closest(
+      "button, a, label, select, [role='button'], [role='option'], [role='combobox'], [role='listbox'], [role='menuitem'], .select-trigger, .dropdown-toggle"
+    ) as HTMLElement | null;
+    const button = el.closest("button");
+    const targetElement = interactiveTarget || button || el;
 
-    // BUG-NEW-2 fix: Skip native <select>/<option> clicks — handleChangeEvent owns SELECT recording
-    if (tagName === "select" || tagName === "option") {
+    // Intercept clicks inside AntD Select dropdown portal to record Action.SELECT
+    if (this.isInsideAntSelectDropdown(targetElement)) {
+      const optionEl = (targetElement.closest('.ant-select-item-option') || targetElement) as HTMLElement;
+      const optionText = optionEl
+        ?.querySelector('.ant-select-item-option-content')?.textContent?.trim()
+        || optionEl?.textContent?.trim() || "";
+
+      const activeCombobox = this.getActiveComboboxForDropdown(targetElement);
+
+      if (optionText && activeCombobox) {
+        this.observeSelectionUpdate(activeCombobox, optionText);
+      }
       return;
     }
 
-    const button = el.closest("button");
-    const targetElement = button || el;
+    // Track submit button clicks to deduplicate subsequent form submit events.
+    // Ensure target element is genuinely a button or submit input element
+    const typeAttr = targetElement ? targetElement.getAttribute("type")?.toLowerCase() : null;
+    const isButtonTag = tagName === "button" || (button !== null) || (tagName === "input" && (typeAttr === "submit" || typeAttr === "image"));
+    const isRoleButton = targetElement.getAttribute("role") === "button";
+    const isValidButton = isButtonTag || isRoleButton;
 
-    // Track submit button clicks to deduplicate subsequent form submit events
-    const isSubmitButton = 
-      (button && (button.getAttribute("type") || "submit") === "submit") ||
-      (tagName === "input" && el.getAttribute("type") === "submit");
+    const isExplicitNonSubmit = typeAttr === "button" || typeAttr === "reset";
+    const elementAttributesStr = (targetElement.id || "") + " " + (targetElement.className || "") + " " + (targetElement.getAttribute("aria-label") || "");
+    const isCloseOrDismiss = CLOSE_DISMISS_REGEX.test(elementAttributesStr);
+
+    const isSubmitButton = isValidButton && !isExplicitNonSubmit && !isCloseOrDismiss && (
+      typeAttr === "submit" ||
+      typeAttr === "image" ||
+      (isValidButton && !typeAttr && SUBMIT_KEYWORD_REGEX.test(targetElement.textContent || "")) ||
+      (button && !typeAttr && button.closest("form") !== null)
+    );
 
     if (isSubmitButton) {
-      // BUG-NEW-1 fix: record the submit-type click synchronously, before any
-      // deferred timer. If the click triggers real page navigation, the deferred
-      // checkChanges chain (up to 500ms out) would never get a chance to run —
-      // this was silently losing the exact "Save & Continue" step the extension
-      // exists to automate. Prefer the enclosing <form> as the recorded element
-      // to match how handleSubmitEvent has always recorded SUBMIT steps (and how
-      // ExecutionEngine's Action.SUBMIT handler expects to receive one); fall
-      // back to the button itself if there's no enclosing form.
       const formEl = targetElement.closest("form") as HTMLFormElement | null;
       this.addRecordedStep(Action.SUBMIT, formEl || targetElement);
 
@@ -220,12 +336,10 @@ export class RecordingEngine {
     this.lastClickTime = now;
     this.lastClickedElement = targetElement;
 
-    // Capture values of all inputs on the page before they are programmatically modified by page scripts
+    // Capture values of all inputs on the page (including inside Shadow DOM roots)
     const inputsBeforeClick = new Map<HTMLInputElement | HTMLTextAreaElement, string>();
-    document.querySelectorAll("input, textarea").forEach((input) => {
-      if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
-        inputsBeforeClick.set(input, input.value);
-      }
+    this.getAllInputsDeep().forEach((input) => {
+      inputsBeforeClick.set(input, input.value);
     });
 
     let programmaticChangeDetected = false;
@@ -243,16 +357,20 @@ export class RecordingEngine {
           }
 
           recordedInputs.add(inputEl);
+          this.recentlyRecordedByClick.add(inputEl);
           changeFound = true;
           programmaticChangeDetected = true;
           logger.info('Recorder', `Detected programmatic value change on <${inputEl.tagName.toLowerCase()}> after click: "${oldValue}" -> "${newValue}"`);
           
+          const detection = FieldDetector.detect(inputEl);
           const isDateInput = 
             inputEl.type === 'date' || 
+            detection.isNativeDate ||
+            detection.isCustomDatePicker ||
             inputEl.classList.contains('datepicker') || 
             inputEl.classList.contains('rmdp-input') || 
             inputEl.classList.contains('flatpickr-input') ||
-            /date|calendar|picker|dob|birth|expiry/i.test(inputEl.name || inputEl.id || inputEl.className || '');
+            /date|calendar|picker|dob|birth|expiry/i.test(inputEl.name || inputEl.id || inputEl.className || inputEl.placeholder || '');
           
           const action = isDateInput ? Action.DATEPICKER : Action.FILL;
           this.addRecordedStep(action, inputEl, newValue);
@@ -261,35 +379,46 @@ export class RecordingEngine {
       return changeFound;
     };
 
-    // Run programmatic change checks at intervals to handle varying framework speeds: 50ms, 150ms, 300ms, 500ms
-    const intervals = [50, 150, 300, 500];
-    intervals.forEach((delay, idx) => {
+    // Run programmatic change checks at intervals covering React/Vue async re-renders and exit animations
+    const intervals = [50, 100, 250, 400];
+    intervals.forEach((delay) => {
       const timer = setTimeout(() => {
         checkChanges();
         this.activeTimers.delete(timer);
 
-        // On the final check interval, if no programmatic changes occurred, record the click if appropriate
-        if (idx === intervals.length - 1) {
-          // BUG-NEW-1 fix: submit-type clicks were already recorded synchronously
-          // above as Action.SUBMIT — skip the CLICK/SELECT fallback entirely for them.
+        // Evaluate click step recording at 100ms (zero delay for buttons/links)
+        if (delay === 100) {
           if (isSubmitButton) {
             return;
           }
 
           const isControlClick = this.isButtonOrLink(targetElement) && !this.isInsideDatePicker(targetElement);
 
-          // BUG-042: Clicks inside a date picker (or on a calendar backdrop/overlay/popup wrapper)
-          // should NEVER be recorded as separate CLICK steps, because the DATEPICKER action
-          // handles the entire click -> navigate -> select -> close sequence internally.
-          // Recording these clicks causes automation to stall on empty/closed calendar elements.
           if (!this.isInsideDatePicker(targetElement)) {
-            // If no input was changed programmatically, or it is a control click, record the click
             if (!programmaticChangeDetected || isControlClick) {
               const selectEl = el.tagName.toLowerCase() === "select" ? el : el.closest("select");
               if (selectEl) {
-                const selectVal = (selectEl as HTMLSelectElement).value;
+                const selectVal = (el instanceof HTMLOptionElement && el.value !== undefined && el.value !== "")
+                  ? el.value
+                  : (selectEl as HTMLSelectElement).value;
                 this.addRecordedStep(Action.SELECT, selectEl, selectVal);
               } else {
+                // Ignore plain value inputs for CLICK steps, allow buttons/submits
+                if (tagName === "input" || tagName === "textarea") {
+                  const typeAttr = el.getAttribute("type")?.toLowerCase() || "";
+                  if (typeAttr !== "submit" && typeAttr !== "button" && typeAttr !== "image") {
+                    return;
+                  }
+                }
+
+                // Guard: Only record Action.CLICK on genuinely interactive elements.
+                // Skip passive container elements (div, span, section, form, p, td, li, etc.)
+                const isInteractive = this.isButtonOrLink(targetElement) || this.isInteractiveTarget(targetElement);
+                if (!isInteractive) {
+                  logger.debug('Recorder', `Skipped Action.CLICK recording on passive container <${targetElement.tagName.toLowerCase()}>`);
+                  return;
+                }
+
                 this.addRecordedStep(Action.CLICK, targetElement);
               }
             }
@@ -300,40 +429,82 @@ export class RecordingEngine {
     });
   }
 
+  private isInteractiveTarget(el: HTMLElement): boolean {
+    if (!el) return false;
+    const tagName = el.tagName.toLowerCase();
+
+    // Explicit interactive tags
+    if (tagName === "button" || tagName === "a" || tagName === "select" || tagName === "summary" || tagName === "details") {
+      return true;
+    }
+
+    // Input tags of submit/button/image/reset/checkbox/radio
+    if (tagName === "input") {
+      const typeAttr = el.getAttribute("type")?.toLowerCase() || "";
+      return ["submit", "button", "image", "reset", "checkbox", "radio"].includes(typeAttr);
+    }
+
+    // Elements with explicit interactive ARIA roles
+    const role = el.getAttribute("role")?.toLowerCase();
+    if (role && ["button", "link", "tab", "menuitem", "option", "checkbox", "radio", "switch", "combobox", "treeitem"].includes(role)) {
+      return true;
+    }
+
+    // Elements with tabindex specified (interactive focusable elements)
+    if (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1") {
+      return true;
+    }
+
+    // Check if element has an explicit inline onclick handler
+    if (el.getAttribute("onclick") || (el as any).onclick) {
+      return true;
+    }
+
+    // Check for interactive class patterns or ancestors
+    if (this.isButtonOrLink(el)) {
+      return true;
+    }
+
+    return false;
+  }
+
   private isButtonOrLink(el: HTMLElement): boolean {
     const tagName = el.tagName.toLowerCase();
     if (tagName === "button" || tagName === "a") return true;
     if (el.closest("button") || el.closest("a")) return true;
-    if (el.getAttribute("role") === "button") return true;
+    const role = el.getAttribute("role");
+    if (role === "button" || role === "combobox" || role === "option" || role === "menuitem" || role === "tab" || role === "listbox") return true;
+    if (el.closest('[role="button"], [role="combobox"], [role="option"], [role="menuitem"], [role="tab"], [role="listbox"]')) return true;
     
-    // Check classes
+    // Check classes for button or dropdown trigger/option patterns
     const classList = Array.from(el.classList);
-    // BUG-NEW-9 fix: anchor the pattern so substrings like "disabled-button-label"
-    // don't false-positive as a control click. We only want to match when "btn" or "button"
-    // is a standalone word or term (e.g. "btn-primary", "primary-btn"), not a partial substring.
-    if (classList.some(c => /^(?:btn|button)(?:[-_].*)?$/i.test(c) || /^.*[-_](?:btn|button)$/i.test(c))) return true;
+    if (classList.some(c => 
+      /^(?:btn|button|select|dropdown|trigger|option|combobox|item)(?:[-_].*)?$/i.test(c) || 
+      /^.*[-_](?:btn|button|select|dropdown|trigger|option|combobox|item)$/i.test(c) ||
+      /^(?:ant-select|react-select|mantine-Select|mui-select)/i.test(c)
+    )) return true;
     
     return false;
   }
 
   private isInsideDatePicker(el: HTMLElement): boolean {
-    let current: HTMLElement | null = el;
-    while (current && current !== document.body) {
-      const idOrClass = (current.id || "") + " " + (current.className || "");
-      // BUG-NEW-7 fix: Removed generic 'backdrop'/'overlay' terms that over-matched
-      // MUI modals, Bootstrap dropdowns, and AntD components.
-      if (/datepicker|calendar|rmdp|flatpickr|ui-datepicker/i.test(idOrClass)) {
-        return true;
-      }
-      current = current.parentElement;
-    }
-    return false;
+    // Direct CSS ancestor check for datepicker popup overlays.
+    // FieldDetector.detect() is restricted to input/textarea/select elements,
+    // but clicked elements inside datepicker popups are typically spans, divs, etc.
+    return el.closest(
+      ".rmdp-wrapper, .rmdp-calendar, .rmdp-container, .rmdp-ep, .react-multi-date-picker, " +
+      ".ant-picker-dropdown, .ant-picker-panel, .ant-picker-date-panel, .ant-picker-body, .ant-picker-cell, " +
+      ".MuiPickersPopper-root, .MuiPickersLayout-root, " +
+      ".flatpickr-calendar, .flatpickr-wrapper, " +
+      ".react-datepicker-popper, .datepicker, .datepicker-container, .date-picker, .ui-datepicker, " +
+      "[class*='datepicker'], [class*='calendar']"
+    ) !== null;
   }
 
   private handleInputEvent(e: Event) {
     if (!this.isRecording) return;
 
-    const el = e.target as HTMLElement;
+    const el = this.getEventTarget(e);
     if (!el) return;
 
     logger.debug('Recorder', `Input event on <${el.tagName.toLowerCase()}> id=${el.id || 'none'} isRecording=${this.isRecording}`);
@@ -346,8 +517,23 @@ export class RecordingEngine {
       return;
     }
 
+    // Skip combobox search inputs — transient search typing should not record as Action.FILL
+    if (el.closest('.ant-select') || (el.getAttribute('role') === 'combobox' && el.getAttribute('aria-haspopup') === 'listbox')) {
+      logger.debug('Recorder', 'Skipped Action.FILL on combobox search input');
+      return;
+    }
+
     // Handle standard inputs/textareas with debouncing to capture finalized values only
     if (tagName === "input" || tagName === "textarea" || el.isContentEditable) {
+      // BUG-C fix: Skip readonly date inputs — their values are set programmatically
+      // by the calendar widget and are already captured by checkChanges() in handleClickEvent.
+      if (el instanceof HTMLInputElement && el.readOnly) {
+        const detection = FieldDetector.detect(el);
+        if (detection.isCustomDatePicker || detection.isNativeDate) {
+          return;
+        }
+      }
+
       const existingTimer = this.debounceTimers.get(el);
       if (existingTimer) {
         clearTimeout(existingTimer);
@@ -355,10 +541,28 @@ export class RecordingEngine {
       }
 
       const timer = setTimeout(() => {
+        // BUG-C fix: If this input was already recorded by checkChanges(), skip it.
+        if (this.recentlyRecordedByClick.has(el)) {
+          this.recentlyRecordedByClick.delete(el);
+          this.debounceTimers.delete(el);
+          this.activeTimers.delete(timer);
+          return;
+        }
         const value = el.isContentEditable ? el.innerText : (el as HTMLInputElement).value;
         const isRichText = el.isContentEditable || el.classList.contains("mce-content-body") || el.classList.contains("ql-editor");
+
+        const detection = FieldDetector.detect(el);
+        const isDateInput = 
+          (el as HTMLInputElement).type === 'date' || 
+          detection.isNativeDate ||
+          detection.isCustomDatePicker ||
+          el.classList.contains('datepicker') || 
+          el.classList.contains('rmdp-input') || 
+          el.classList.contains('flatpickr-input') ||
+          /date|calendar|picker|dob|birth|expiry/i.test((el as HTMLInputElement).name || el.id || el.className || '');
         
-        this.addRecordedStep(isRichText ? Action.RICH_TEXT : Action.FILL, el, value);
+        const action = isRichText ? Action.RICH_TEXT : (isDateInput ? Action.DATEPICKER : Action.FILL);
+        this.addRecordedStep(action, el, value);
         this.debounceTimers.delete(el);
         this.activeTimers.delete(timer);
       }, INPUT_DEBOUNCE_MS);
@@ -371,7 +575,7 @@ export class RecordingEngine {
   private handleChangeEvent(e: Event) {
     if (!this.isRecording) return;
 
-    const el = e.target as HTMLElement;
+    const el = this.getEventTarget(e);
     if (!el) return;
 
     const tagName = el.tagName.toLowerCase();
@@ -391,6 +595,12 @@ export class RecordingEngine {
         const fileInput = el as HTMLInputElement;
         const fileName = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0].name : "";
         this.addRecordedStep(Action.FILE_UPLOAD, el, fileName);
+      } else if (typeAttr === "date") {
+        if (this.recentlyRecordedByClick.has(el)) return;
+        const dateVal = (el as HTMLInputElement).value;
+        if (dateVal) {
+          this.addRecordedStep(Action.DATEPICKER, el, dateVal);
+        }
       }
     }
   }
@@ -433,9 +643,27 @@ export class RecordingEngine {
     this.addRecordedStep(Action.SUBMIT, formEl);
   }
 
-  private addRecordedStep(action: Action, el: HTMLElement, value = "", checked?: boolean) {
+  private addRecordedStep(rawAction: Action, el: HTMLElement, value = "", checked?: boolean) {
+    const detection = FieldDetector.detect(el);
+    const resolved = ActionFactory.resolveAction(detection, rawAction);
+    const action = resolved.action;
+
     const selectorMeta = this.generateSelectorMeta(el);
+    if (resolved.metadata) {
+      selectorMeta.metadata = { ...(selectorMeta.metadata || {}), ...resolved.metadata };
+    }
     const primarySelector = selectorMeta.cssPath || el.tagName.toLowerCase();
+
+    // Step Deduplication Check: ignore rapid duplicate step on same selector & action within 300ms window
+    const now = Date.now();
+    const dedupeKey = `${primarySelector}:${action}`;
+    const lastStep = this.lastStepDedupeMap.get(dedupeKey) || this.lastStepDedupeMap.get(el);
+    if (lastStep && lastStep.action === action && (now - lastStep.timestamp) < 300) {
+      logger.debug('Recorder', `Deduplicated rapid step on ${primarySelector} for action ${action}`);
+      return;
+    }
+    this.lastStepDedupeMap.set(el, { action, timestamp: now });
+    this.lastStepDedupeMap.set(dedupeKey, { action, timestamp: now });
 
     // Mapping steps to the active page flow context
     const currentUrl = window.location.href;
@@ -453,7 +681,7 @@ export class RecordingEngine {
       required: (el as any).required === true || el.hasAttribute('required'),
       retryable: true,
       maxRetries: 3,
-      expectedType: action === Action.DATEPICKER ? "date" : undefined
+      expectedType: resolved.expectedType,
     };
 
     // Mutually exclude recording events if an automation run is currently active
@@ -527,14 +755,24 @@ export class RecordingEngine {
     // Try label finding
     meta.labelText = this.findAssociatedLabel(el);
 
+    // If target is a button, link, or role=button and labelText is empty, use its text content
+    const tagName = el.tagName.toLowerCase();
+    const role = el.getAttribute("role")?.toLowerCase();
+    if (!meta.labelText && (tagName === "button" || tagName === "a" || role === "button" || el.classList.contains("btn"))) {
+      const btnText = el.textContent?.trim();
+      if (btnText && btnText.length < 50) {
+        meta.labelText = btnText;
+      }
+    }
+
     // BUG-NEW-6 fix: Capture data-testid and role for higher-fidelity selector metadata
     const testId = el.getAttribute("data-testid") || el.getAttribute("data-test-id");
     if (testId) {
       meta.testId = testId;
     }
-    const role = el.getAttribute("role");
-    if (role) {
-      meta.role = role;
+    const roleAttr = el.getAttribute("role");
+    if (roleAttr) {
+      meta.role = roleAttr;
     }
 
     meta.cssPath = this.generateCssPath(el);
@@ -581,11 +819,12 @@ export class RecordingEngine {
   private findAssociatedLabel(el: HTMLElement): string | undefined {
     if (!el) return undefined;
     const elId = typeof el.getAttribute === 'function' ? el.getAttribute("id") : null;
-    
-    // 1. Explicit label with 'for' attribute matching el.id
-    if (elId) {
+    const root = (typeof el.getRootNode === 'function' ? el.getRootNode() : document) as ParentNode;
+
+    // 1. Explicit label with 'for' attribute matching el.id (scoped to element's root/ShadowRoot)
+    if (elId && root && typeof root.querySelector === 'function') {
       try {
-        const label = document.querySelector(`label[for="${this.escapeValue(elId)}"]`);
+        const label = root.querySelector(`label[for="${this.escapeValue(elId)}"]`);
         if (label && label.textContent) {
           return label.textContent.trim();
         }
@@ -594,33 +833,13 @@ export class RecordingEngine {
       }
     }
 
-    // 2. Nested label
+    // 2. Nested label wrapper (e.g. <label><input /></label>)
     const parentLabel = typeof el.closest === 'function' ? el.closest("label") : null;
     if (parentLabel) {
       return this.cleanLabelText(parentLabel);
     }
 
-    // 3. Sibling label (e.g., label is preceding sibling or inside preceding sibling)
-    const container = typeof el.closest === 'function'
-      ? el.closest(".form-group, .col-md-6, .col-sm-6, .form-row, td, tr") || el.parentElement
-      : el.parentElement;
-    if (container && typeof container.querySelector === 'function') {
-      try {
-        const label = container.querySelector("label");
-        if (label && label.textContent) {
-          return label.textContent.trim();
-        }
-        
-        const customLabel = container.querySelector(".form-label, .control-label, strong, b");
-        if (customLabel && customLabel.textContent) {
-          return customLabel.textContent.trim();
-        }
-      } catch (e) {
-        // ignore invalid selector
-      }
-    }
-
-    // 4. Preceding sibling label
+    // 3. Preceding sibling label (direct or nearby preceding sibling in same DOM parent)
     let prev = el.previousElementSibling;
     while (prev) {
       if (prev.tagName === "LABEL" || prev.classList.contains("form-label")) {
@@ -629,6 +848,33 @@ export class RecordingEngine {
         }
       }
       prev = prev.previousElementSibling;
+    }
+
+    // 4. Scoped container label (prefer matching for="" over first generic label)
+    const container = typeof el.closest === 'function'
+      ? el.closest(".form-group, .field-group, .box, .col-md-6, .col-sm-6, .form-row, td, tr") || el.parentElement
+      : el.parentElement;
+
+    if (container && typeof container.querySelector === 'function') {
+      try {
+        if (elId) {
+          const matchingLabel = container.querySelector(`label[for="${this.escapeValue(elId)}"]`);
+          if (matchingLabel && matchingLabel.textContent) {
+            return matchingLabel.textContent.trim();
+          }
+        }
+
+        // Preceding label inside container
+        const containerLabels = Array.from(container.querySelectorAll("label, .form-label, .control-label, strong, b"));
+        const precedingLabel = containerLabels.find(lbl => 
+          (lbl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+        );
+        if (precedingLabel && precedingLabel.textContent) {
+          return precedingLabel.textContent.trim();
+        }
+      } catch (e) {
+        // ignore invalid selector
+      }
     }
 
     return undefined;
@@ -644,13 +890,24 @@ export class RecordingEngine {
       const curId = typeof current.getAttribute === 'function' ? current.getAttribute("id") : null;
 
       if (curId && !this.isDynamicId(curId)) {
-        selector += `#${this.escapeValue(curId)}`;
-        path.unshift(selector);
-        break; // Unique stable ID, stop climbing
+        // BUG-AUDIT-FIX-1: Verify ID is truly unique within its containing root (document or ShadowRoot)
+        try {
+          const root = (typeof current.getRootNode === 'function' ? current.getRootNode() : document) as ParentNode;
+          const idCount = root.querySelectorAll(`#${CSS.escape(curId)}`).length;
+          if (idCount === 1) {
+            selector += `#${this.escapeValue(curId)}`;
+            path.unshift(selector);
+            break; // Verified unique stable ID within root, stop climbing
+          }
+          // ID appears multiple times — fall through to structural selectors
+        } catch {
+          // Invalid CSS selector from malformed ID — fall through
+        }
       } else if (nameAttr && !/^(radix|headlessui|react-select)/i.test(nameAttr)) {
         selector += `[name="${this.escapeValue(nameAttr)}"]`;
         try {
-          if (document.querySelectorAll(`[name="${this.escapeValue(nameAttr)}"]`).length === 1) {
+          const root = (typeof current.getRootNode === 'function' ? current.getRootNode() : document) as ParentNode;
+          if (root.querySelectorAll(`[name="${this.escapeValue(nameAttr)}"]`).length === 1) {
             path.unshift(selector);
             break;
           }
@@ -703,7 +960,15 @@ export class RecordingEngine {
   private generateXPath(el: HTMLElement): string {
     const elId = typeof el.getAttribute === 'function' ? el.getAttribute("id") : null;
     if (elId && !this.isDynamicId(elId)) {
-      return `//*[@id="${this.escapeValue(elId)}"]`;
+      // BUG-AUDIT-FIX-1: Verify ID is truly unique before using it as XPath anchor
+      try {
+        const idCount = document.querySelectorAll(`#${CSS.escape(elId)}`).length;
+        if (idCount === 1) {
+          return `//*[@id="${this.escapeValue(elId)}"]`;
+        }
+      } catch {
+        // Invalid CSS selector from malformed ID — fall through to structural path
+      }
     }
 
     const paths: string[] = [];
@@ -715,8 +980,16 @@ export class RecordingEngine {
       const curId = typeof current.getAttribute === 'function' ? current.getAttribute("id") : null;
       // If we find an ancestor with a stable ID, anchor to it
       if (current !== el && curId && !this.isDynamicId(curId)) {
-        anchor = `//*[@id="${this.escapeValue(curId)}"]`;
-        break;
+        // BUG-AUDIT-FIX-1: Verify ancestor ID is truly unique before anchoring
+        try {
+          const anchorIdCount = document.querySelectorAll(`#${CSS.escape(curId)}`).length;
+          if (anchorIdCount === 1) {
+            anchor = `//*[@id="${this.escapeValue(curId)}"]`;
+            break;
+          }
+        } catch {
+          // fall through
+        }
       }
 
       const tagName = current.nodeName.toLowerCase();

@@ -55,4 +55,64 @@ describe('domUtils — React-safe native setters', () => {
     const evt = handler.mock.calls[0][0] as MouseEvent;
     expect(evt.buttons).toBe(1);
   });
+
+  it('dispatchEvents should dispatch InputEvent for "input" type with inputType="insertText"', () => {
+    const el = document.createElement('input');
+    document.body.appendChild(el);
+    const handler = vi.fn();
+    el.addEventListener('input', handler);
+    dispatchEvents(el, ['input']);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const evt = handler.mock.calls[0][0];
+    // If InputEvent is available in the test environment, verify correct type
+    if (typeof InputEvent === 'function') {
+      expect(evt).toBeInstanceOf(InputEvent);
+      expect((evt as InputEvent).inputType).toBe('insertText');
+    }
+    document.body.removeChild(el);
+  });
+
+  it('DefaultTextStrategy fill should fire events in order: focus → input → change → blur', async () => {
+    const { DefaultTextStrategy } = await import('../src/content/datepickers/strategies/DefaultTextStrategy');
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    const events: string[] = [];
+    ['focus', 'input', 'change', 'blur'].forEach(type => {
+      input.addEventListener(type, () => events.push(type));
+    });
+
+    const strategy = new DefaultTextStrategy();
+    await strategy.execute(input, 'test value', {
+      isNativeDate: false,
+      isCustomDatePicker: false,
+      adapter: null,
+      minDate: null,
+      maxDate: null,
+      score: 0,
+    });
+
+    expect(events).toEqual(['focus', 'input', 'change', 'blur']);
+    document.body.removeChild(input);
+  });
+
+  it('dispatchEvents should forward eventInit options to KeyboardEvent instances', () => {
+    const el = document.createElement('input');
+    const handler = vi.fn();
+    el.addEventListener('keydown', handler);
+
+    dispatchEvents(el, ['keydown'], {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const evt = handler.mock.calls[0][0] as KeyboardEvent;
+    expect(evt.key).toBe('Enter');
+    expect(evt.keyCode).toBe(13);
+  });
 });
+
+

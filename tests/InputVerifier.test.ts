@@ -66,5 +66,40 @@ describe("InputNormalizer & InputVerifier Unit Tests", () => {
       const resTextFail = InputVerifier.verify(textInput, "John Doe");
       expect(resTextFail.pass).toBe(false);
     });
+
+    it("should verify formatted currency and numeric values for type=text inputs", () => {
+      textInput.value = "284.45";
+
+      // Currency symbol in rawValue
+      const resCurrency = InputVerifier.verify(textInput, "₹284.45");
+      expect(resCurrency.pass).toBe(true);
+
+      // Trailing decimal in rawValue
+      const resDecimal = InputVerifier.verify(textInput, "284.450");
+      expect(resDecimal.pass).toBe(true);
+    });
+
+    it("should verify DOM thousand comma auto-formatting for type=text inputs", () => {
+      textInput.value = "1,000";
+
+      // Plain number in Excel vs thousand comma in DOM
+      const resComma = InputVerifier.verify(textInput, "1000");
+      expect(resComma.pass).toBe(true);
+    });
+
+    it("should strictly enforce leading zeros on plain digit IDs and PIN codes for type=text inputs", () => {
+      textInput.value = "62100";
+
+      // Account number / PIN code with leading zero dropped in Excel
+      const resID = InputVerifier.verify(textInput, "062100");
+      expect(resID.pass).toBe(false);
+    });
+
+    it("should fail verification if text input is left empty on DOM even if rawValue sanitizes to zero", () => {
+      textInput.value = "";
+
+      const resEmpty = InputVerifier.verify(textInput, "$0.00");
+      expect(resEmpty.pass).toBe(false);
+    });
   });
 });

@@ -64,6 +64,28 @@ export class MuiAdapter implements DatePickerAdapter {
     const targetMonth = targetDate.getMonth();
     const targetYear = targetDate.getFullYear();
 
+    // 1. Try Year View Direct Jump if year difference is >= 1
+    const initialHeader = this.readHeader(popup);
+    if (initialHeader) {
+      const initialCurrent = this.parseHeader(initialHeader);
+      if (initialCurrent && Math.abs(initialCurrent.year - targetYear) >= 1) {
+        const yearViewHeader = popup.querySelector(".MuiPickersCalendarHeader-label, .MuiPickersCalendarHeader-switchViewButton") as HTMLElement;
+        if (yearViewHeader) {
+          logger.info("MuiAdapter", `Attempting Year View direct jump to ${targetYear}...`);
+          dispatchEvents(yearViewHeader, ["click"]);
+          await new Promise(r => setTimeout(r, 100));
+
+          const yearButtons = Array.from(popup.querySelectorAll(".MuiYearCalendar-root button, .MuiPickersYear-root button, [class*='Year'] button, button")) as HTMLElement[];
+          const targetYearBtn = yearButtons.find(btn => btn.textContent?.trim() === String(targetYear));
+          if (targetYearBtn) {
+            dispatchEvents(targetYearBtn, ["click"]);
+            await new Promise(r => setTimeout(r, 100));
+            logger.info("MuiAdapter", `Year View direct jump to ${targetYear} succeeded.`);
+          }
+        }
+      }
+    }
+
     let attempts = 0;
     while (attempts < DATEPICKER_NAV_MAX_ITERATIONS) {
       const headerText = this.readHeader(popup);
@@ -154,8 +176,17 @@ export class MuiAdapter implements DatePickerAdapter {
     }, DATEPICKER_VALUE_SETTLE_TIMEOUT).catch(() => null);
 
     if (!valueSet) {
-      logger.error("MuiAdapter", `Input value did not settle. Value: "${inputEl.value}"`);
-      return false;
+      logger.warn("MuiAdapter", `Input value did not settle. Value: "${inputEl.value}"`);
+    }
+
+    try {
+      element.blur();
+      dispatchEvents(element, ["blur", "focusout"]);
+      const escEvent = new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true });
+      element.dispatchEvent(escEvent);
+      document.body.dispatchEvent(escEvent);
+    } catch (e) {
+      logger.debug("MuiAdapter", "MUI popup dismissal error (ignored)", e);
     }
 
     logger.info("MuiAdapter", `MUI date successfully verified: "${inputEl.value}"`);

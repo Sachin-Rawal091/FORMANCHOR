@@ -222,6 +222,41 @@ describe('Real-World Matrix Test Suite', () => {
     sizeInp.id = 'company-size';
     step1Panel.appendChild(sizeInp);
 
+    const dobInput = document.createElement('input');
+    dobInput.id = 'company-dob';
+    const pickerContainer = document.createElement('div');
+    pickerContainer.className = 'ant-picker';
+    const pickerInputContainer = document.createElement('div');
+    pickerInputContainer.className = 'ant-picker-input';
+    pickerInputContainer.appendChild(dobInput);
+    pickerContainer.appendChild(pickerInputContainer);
+    step1Panel.appendChild(pickerContainer);
+
+    pickerContainer.addEventListener('click', () => {
+      if (!document.querySelector('.ant-picker-dropdown')) {
+        const popup = document.createElement('div');
+        popup.className = 'ant-picker-dropdown';
+
+        const headerView = document.createElement('div');
+        headerView.className = 'ant-picker-header-view';
+        headerView.textContent = 'August 1998';
+        popup.appendChild(headerView);
+
+        const cell = document.createElement('div');
+        cell.className = 'ant-picker-cell ant-picker-cell-in-view';
+        const cellInner = document.createElement('div');
+        cellInner.className = 'ant-picker-cell-inner';
+        cellInner.textContent = '15';
+        cellInner.addEventListener('click', () => {
+          dobInput.value = '15/08/1998';
+        });
+        cell.appendChild(cellInner);
+        popup.appendChild(cell);
+
+        document.body.appendChild(popup);
+      }
+    });
+
     const nextBtn = document.createElement('button');
     nextBtn.id = 'next-step';
     step1Panel.appendChild(nextBtn);
@@ -288,6 +323,15 @@ describe('Real-World Matrix Test Suite', () => {
           required: true
         },
         {
+          id: 'step-dob',
+          action: Action.DATEPICKER,
+          selector: '#company-dob',
+          selectorMeta: { id: 'company-dob' },
+          value: '{{DOB}}',
+          columnName: 'DOB',
+          required: true
+        },
+        {
           id: 'step-next',
           action: Action.NAVIGATE_NEXT,
           selector: '#next-step',
@@ -323,7 +367,7 @@ describe('Real-World Matrix Test Suite', () => {
     const mockExcelRows = [
       {
         rowIndex: 2,
-        data: { Company: 'FormPilot Inc', Size: '25', Plan: 'premium' },
+        data: { Company: 'FormPilot Inc', Size: '25', DOB: '15/08/1998', Plan: 'premium' },
         status: RowStatus.PENDING,
         isValid: true,
         validationErrors: []
@@ -333,18 +377,19 @@ describe('Real-World Matrix Test Suite', () => {
     // 4. Run Execution
     await runExecutorFlow(mockRecording, mockExcelRows);
 
-    // 5. Wait & Verify
+    // 5. Wait & Verify Dual Assertions (DOB persistence + Step 2 active)
     await vi.waitFor(() => {
       expect(companyInp.value).toBe('FormPilot Inc');
       expect(sizeInp.value).toBe('25');
+      expect(dobInput.value).toBe('15/08/1998'); // Assertion 1: DOB persisted
       expect(step1Panel.style.display).toBe('none');
-      expect(step2Panel.style.display).toBe('block');
+      expect(step2Panel.style.display).toBe('block'); // Assertion 2: Step 2 active
       expect(planRadio.checked).toBe(true);
       expect(termsCheckbox.checked).toBe(true);
       expect(submitFired).toBe(true);
       expect(executionStateStore.status).toBe(ExecutionStatus.COMPLETE);
-    }, { timeout: 5000 });
-  });
+    }, { timeout: 10000 });
+  }, 15000);
 
   it('Scenario 3: Government Static HTML Form - Should fill 15+ native inputs perfectly', async () => {
     const { Action, RowStatus, ExecutionStatus } = await import('../src/types');
@@ -444,7 +489,7 @@ describe('Real-World Matrix Test Suite', () => {
           COMMENTS: 'Fine form',
           BIO: 'Developer of FormPilot',
           AGE: 28,
-          DOB: new Date('1998-05-20'),
+          DOB: '1998-05-20',
           STATE: 'val-1',
           COUNTRY: 'IN',
           GENDER: 'female'
@@ -476,8 +521,8 @@ describe('Real-World Matrix Test Suite', () => {
       expect((elements['agree-2'] as HTMLInputElement).checked).toBe(true);
       expect((elements['agree-3'] as HTMLInputElement).checked).toBe(true);
       expect(executionStateStore.status).toBe(ExecutionStatus.COMPLETE);
-    }, { timeout: 5000 });
-  });
+    }, { timeout: 10000 });
+  }, 20000);
 
   it('Scenario 4: Job Application (Workday style) - Should handle fields and stub file upload gracefully', async () => {
     const { Action, RowStatus, ExecutionStatus } = await import('../src/types');

@@ -1,156 +1,75 @@
-import { 
-  Step, 
-  Action, 
-  ExcelRow, 
-  RowStatus, 
-  ExecutionState, 
-  ExecutionStatus, 
-  MessageType, 
-  FormPilotMessage, 
-  StepResult, 
-  LogStatus,
-  UserSettings
+import {
+  Step,
+  Action,
+  ExcelRow,
+  RowStatus,
+  ExecutionState,
+  ExecutionStatus,
+  MessageType,
+  FormPilotMessage,
+  StepResult,
+  LogStatus
 } from "../types";
 import { StateManager } from "./engines/StateManager";
+import { sendToBackground } from "../shared/messages";
 import { RetryEngine, ErrorClassification } from "./engines/RetryEngine";
 import { SmartWaitEngine } from "./engines/SmartWaitEngine";
 import { SelectorEngine } from "./engines/SelectorEngine";
 import { ResponseDetectionEngine } from "./engines/ResponseDetectionEngine";
-import { 
-  MAX_PAGE_RETRIES, 
+import { AutoResumeManager } from "./AutoResumeManager";
+import { FormResetter } from "./FormResetter";
+import { SubmitVerifier } from "./SubmitVerifier";
+import { LogBatcher } from "./LogBatcher";
+import { loadAndApplyUserSettings } from "../utils/settingsLoader";
+import {
+  MAX_PAGE_RETRIES,
   STEP_DELAY,
   EXCEL_CHUNK_SIZE,
-  POST_ROW_DELAY_MS,
-  POST_SUBMIT_SETTLE_MS,
-  WAIT_DOM_STABLE_TIMEOUT,
-  MAX_SUBMIT_RETRIES,
-  SUBMIT_RETRY_SETTLE_MS,
-  POST_DISMISS_RESET_WAIT_MS,
-  FORM_READY_RETRY_STEP_MS,
-  MODAL_DISMISS_CLICK_SETTLE_MS,
-  MODAL_ESCAPE_SETTLE_MS
+  WAIT_DOM_STABLE_TIMEOUT
 } from "../shared/constants";
 import { logger } from "../utils/logger";
 import { generateUUID } from "../utils/uuid";
+import { dispatchEvents } from "./domUtils";
 
 export class Executor {
   private isRunning = false;
   private isPaused = false;
-  private autoResumeInProgress = false; // BUG-011: prevents START_EXECUTION during auto-resume
   private sessionId = "";
   private recordingSteps: Step[] = [];
   private siteUrl = "";
   private stepDelay = STEP_DELAY;
-  
+
+  private readonly autoResumeManager: AutoResumeManager;
+  private readonly formResetter: FormResetter;
+  private readonly submitVerifier: SubmitVerifier;
+  private readonly logBatcher: LogBatcher;
+
   constructor() {
+    this.logBatcher = new LogBatcher();
+    this.formResetter = new FormResetter(
+      (message, timeoutMs) => this.safeSendMessage(message, timeoutMs),
+      () => this.logBatcher.flushNow()
+    );
+    this.submitVerifier = new SubmitVerifier({
+      isRunning: () => this.isRunning,
+      sendMessage: (message, timeoutMs) => this.safeSendMessage(message, timeoutMs)
+    });
+    this.autoResumeManager = new AutoResumeManager({
+      isRunning: () => this.isRunning,
+      setStepDelay: (delay) => { this.stepDelay = delay; },
+      startExecution: (recordingId, sessionId) => this.start(recordingId, sessionId)
+    });
+
     this.setupMessageListener();
     this.setupStorageListener();
-    this.checkAutoResume();
+    this.autoResumeManager.checkAutoResume();
     (globalThis as any).__FP_EXECUTOR_INSTANCE__ = this;
-  }
-
-  private async checkAutoResume() {
-    this.autoResumeInProgress = true;
-    try {
-      // Wait a bit to ensure state is settled from any background syncs
-      await new Promise(r => setTimeout(r, 500));
-      
-      // Guard: Do not resume if execution has already been actively triggered via messages
-      if (this.isRunning) {
-        logger.debug('Executor', 'checkAutoResume: Execution already running, skipping auto-resume.');
-        this.autoResumeInProgress = false;
-        return;
-      }
-      
-      try {
-        const state = await StateManager.getState();
-        if (state && state.status === ExecutionStatus.RUNNING && state.recordingId && state.sessionId) {
-          // BUG-034: Early hostname guard — only proceed if we're on the right domain
-          const expectedHost = state.siteUrl ? new URL(state.siteUrl).hostname : null;
-          if (expectedHost && !window.location.hostname.includes(expectedHost)) {
-            logger.debug('Executor', `Auto-resume skipped: wrong domain. Expected: ${expectedHost}, Current: ${window.location.hostname}`);
-            this.autoResumeInProgress = false;
-            return;
-          }
-  
-          // BUG-001: Only auto-resume if URL already matches — do NOT redirect.
-          // Redirecting causes infinite navigation loops when the target page
-          // immediately injects a new content script that auto-resumes again.
-          if (state.currentUrl) {
-            try {
-              const currentUrlObj = new URL(window.location.href);
-              const stateUrlObj = new URL(state.currentUrl);
-              
-              if (currentUrlObj.hostname !== stateUrlObj.hostname || currentUrlObj.pathname !== stateUrlObj.pathname) {
-                // If we are at the start of a new row (step 0), we can still resume if we are on the siteUrl
-                let canResume = false;
-                if (state.currentStepIndex === 0 && state.siteUrl) {
-                  try {
-                    const siteUrlObj = new URL(state.siteUrl);
-                    if (currentUrlObj.hostname === siteUrlObj.hostname && currentUrlObj.pathname === siteUrlObj.pathname) {
-                      canResume = true;
-                    }
-                  } catch(e) {
-                    logger.warn('Executor', 'URL parsing failed during auto-resume siteUrl check:', e);
-                  }
-                }
-                
-                if (!canResume) {
-                  logger.debug('Executor', `Auto-resume skipped. Expected URL: ${stateUrlObj.pathname}, Current: ${currentUrlObj.pathname}`);
-                  this.autoResumeInProgress = false;
-                  return;
-                }
-              }
-            } catch(e) {
-              this.autoResumeInProgress = false;
-              return;
-            }
-          }
-          
-          logger.info('Executor', 'Auto-resuming from previous state...');
-          
-          // Load custom settings overrides from local storage
-          try {
-            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-              const localData = await chrome.storage.local.get('settings');
-              const settings = (localData.settings || {}) as UserSettings;
-              this.stepDelay = settings.stepDelay ?? STEP_DELAY;
-              RetryEngine.customSettings = {
-                waitElementTimeout: settings.waitElementTimeout,
-                maxStepRetries: settings.maxStepRetries
-              };
-              logger.info('Executor', 'Custom settings loaded for auto-resume:', {
-                stepDelay: this.stepDelay,
-                waitElementTimeout: RetryEngine.customSettings.waitElementTimeout,
-                maxStepRetries: RetryEngine.customSettings.maxStepRetries
-              });
-            }
-          } catch (err) {
-            logger.error('Executor', 'Failed to load custom settings in auto-resume:', err);
-          }
-  
-          // Re-hydrate and start (will pick up from state.currentRowIndex)
-          await this.start(state.recordingId, state.sessionId);
-        }
-      } catch (err) {
-        logger.error('Executor', 'Inner checkAutoResume error:', err);
-      }
-      this.autoResumeInProgress = false;
-    } catch (err) {
-      this.autoResumeInProgress = false;
-      logger.error('Executor', 'Failed auto-resume check', err);
-    }
   }
 
   private setupMessageListener() {
     chrome.runtime.onMessage.addListener((message: FormPilotMessage, _sender, sendResponse) => {
       switch (message.type) {
         case MessageType.START_EXECUTION: {
-          // BUG-011: Block concurrent start if auto-resume is in progress
-          if (this.autoResumeInProgress) {
-            logger.warn('Executor', 'START_EXECUTION blocked: auto-resume in progress.');
-            break;
-          }
           const payload = message.payload as { recordingId: string; sessionId: string };
           this.start(payload?.recordingId, payload?.sessionId || message.sessionId, message.tabId)
             .catch(err => logger.error('Executor', 'START_EXECUTION handler failed:', err));
@@ -210,7 +129,7 @@ export class Executor {
   private safeSendMessage(message: any, timeoutMs = 2000): Promise<any> {
     return new Promise((resolve) => {
       let resolved = false;
-      
+
       const timer = setTimeout(() => {
         if (!resolved) {
           resolved = true;
@@ -220,11 +139,11 @@ export class Executor {
       }, timeoutMs);
 
       try {
-        chrome.runtime.sendMessage(message, (response) => {
+        sendToBackground(message).then((response) => {
           if (!resolved) {
             resolved = true;
             clearTimeout(timer);
-            if (chrome.runtime.lastError) {
+            if (!response && chrome.runtime.lastError) {
               logger.warn('Executor', `sendMessage lastError: ${chrome.runtime.lastError.message}`);
               resolve({ error: chrome.runtime.lastError.message });
             } else {
@@ -257,30 +176,13 @@ export class Executor {
     }
 
     // Load custom settings overrides from storage
-    try {
-      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        const localData = await chrome.storage.local.get('settings');
-        const settings = (localData.settings || {}) as UserSettings;
-        this.stepDelay = settings.stepDelay ?? STEP_DELAY;
-        RetryEngine.customSettings = {
-          waitElementTimeout: settings.waitElementTimeout,
-          maxStepRetries: settings.maxStepRetries
-        };
-        logger.info('Executor', 'Custom settings loaded for start:', {
-          stepDelay: this.stepDelay,
-          waitElementTimeout: RetryEngine.customSettings.waitElementTimeout,
-          maxStepRetries: RetryEngine.customSettings.maxStepRetries
-        });
-      }
-    } catch (err) {
-      logger.error('Executor', 'Failed to load custom settings in start:', err);
-    }
+    this.stepDelay = await loadAndApplyUserSettings();
 
     // Immediate storage mutex check to prevent multi-tab race conditions
     const currentState = await StateManager.getState();
-    const isStaleLock = !currentState || 
-                        currentState.status === ExecutionStatus.COMPLETE || 
-                        currentState.status === ExecutionStatus.FAILED || 
+    const isStaleLock = !currentState ||
+                        currentState.status === ExecutionStatus.COMPLETE ||
+                        currentState.status === ExecutionStatus.FAILED ||
                         currentState.status === ExecutionStatus.IDLE;
     if (currentState?.mutexLock && currentState.mutexLock !== sessionId && !isStaleLock) {
       logger.warn('Executor', `Executor blocked: Mutex locked by session ${currentState.mutexLock} with status ${currentState.status}`);
@@ -290,6 +192,7 @@ export class Executor {
     this.isRunning = true;
     this.isPaused = false;
     this.sessionId = sessionId;
+    this.logBatcher.setSessionId(sessionId);
     try {
       // 1. Fetch the targeted recording via background proxy
       const recordingRes = await this.safeSendMessage({
@@ -323,13 +226,13 @@ export class Executor {
         currentState.status === ExecutionStatus.PAUSED ||
         currentState.status === ExecutionStatus.CAPTCHA_PAUSED
       );
-      
+
       if (isResume) {
         state = await StateManager.updateState({ status: ExecutionStatus.RUNNING }) || currentState;
         logger.debug('Executor', 'Re-using existing active session state for auto-resume:', state);
       } else {
         state = await StateManager.initializeSession(
-          this.sessionId, 
+          this.sessionId,
           totalRows,
           recordingId,
           this.siteUrl,
@@ -341,10 +244,10 @@ export class Executor {
       // If we are starting from the very beginning (row 0, step 0), ensure we have a clean start URL page
       const resetDoneKey = `__fp_reset_done_${this.sessionId}`;
       if (
-        state && 
-        state.currentRowIndex === 0 && 
-        state.currentStepIndex === 0 && 
-        this.siteUrl && 
+        state &&
+        state.currentRowIndex === 0 &&
+        state.currentStepIndex === 0 &&
+        this.siteUrl &&
         sessionStorage.getItem(resetDoneKey) !== 'true'
       ) {
         let urlsMatch = false;
@@ -354,7 +257,7 @@ export class Executor {
           if (currentUrlObj.hostname === siteUrlObj.hostname && currentUrlObj.pathname === siteUrlObj.pathname) {
             urlsMatch = true;
           }
-        } catch(e) {
+        } catch (e) {
           logger.warn('Executor', 'URL parsing failed during fresh start URL check:', e);
         }
 
@@ -371,6 +274,7 @@ export class Executor {
               timestamp: Date.now()
             }, 5000);
           }
+          await this.logBatcher.flushNow();
           window.location.href = this.siteUrl;
           return; // Execution resumes on new page load via checkAutoResume
         } else {
@@ -496,6 +400,37 @@ export class Executor {
       // Process this row
       logger.info('Executor', `Processing row index: ${row.rowIndex} (${rowIdx + 1} of ${totalRows})`);
 
+      // Pre-row health check for rowIdx > 0: ensure we are at siteUrl and initial input is ready
+      if (rowIdx > 0 && this.siteUrl) {
+        let isAtStartUrl = true;
+        try {
+          const currentUrlObj = new URL(window.location.href);
+          const siteUrlObj = new URL(this.siteUrl);
+          if (currentUrlObj.hostname !== siteUrlObj.hostname || currentUrlObj.pathname !== siteUrlObj.pathname) {
+            isAtStartUrl = false;
+          }
+        } catch (e) {
+          logger.warn('Executor', 'URL check failed before row execution:', e);
+        }
+
+        const firstStep = this.recordingSteps[0];
+        let isFirstStepReady = false;
+        if (firstStep) {
+          const found = SelectorEngine.findElement(firstStep.selectorMeta, firstStep.selector);
+          if (found && this.formResetter.isElementVisible(found.element as HTMLElement)) {
+            isFirstStepReady = true;
+          }
+        } else {
+          isFirstStepReady = true;
+        }
+
+        if (!isAtStartUrl || !isFirstStepReady) {
+          logger.info('Executor', `Pre-row check failed for row ${rowIdx + 1}: isAtStartUrl=${isAtStartUrl}, isFirstStepReady=${isFirstStepReady}. Resetting form/redirecting...`);
+          await this.resetFormBetweenRows();
+          await this.logBatcher.flushNow();
+        }
+      }
+
       const rowResult = await this.executeRow(row, state);
 
       if (rowResult === "ABORTED") return;
@@ -527,7 +462,7 @@ export class Executor {
         sessionId: this.sessionId,
         timestamp: Date.now()
       }, 5000);
-      
+
       if (setExcelRes?.error) {
         logger.error('Executor', 'Failed to persist Excel status to IndexedDB:', setExcelRes.error);
         throw new Error(`Failed to persist Excel row status: ${setExcelRes.error}`);
@@ -541,6 +476,7 @@ export class Executor {
       if (rowIdx + 1 < totalRows && this.isRunning) {
         logger.debug('Executor', `Resetting form for row ${rowIdx + 2}...`);
         await this.resetFormBetweenRows();
+        await this.logBatcher.flushNow();
         // After reset, wait for DOM to fully stabilize before starting next row
         await SmartWaitEngine.waitForDOMStability(WAIT_DOM_STABLE_TIMEOUT).catch((err) => {
           logger.debug('Executor', `Post-reset DOM stability wait timed out: ${err.message}`);
@@ -554,197 +490,21 @@ export class Executor {
     }
   }
 
-  // ─── FORM RESET BETWEEN ROWS ───────────────────────────────────────
-  // After a successful submission, forms typically show a success modal,
-  // toast, or redirect. This method dismisses success UI and resets the
-  // form back to its initial state for the next row.
-  // ─────────────────────────────────────────────────────────────────────
+  // ─── FORM RESET BETWEEN ROWS (delegates to FormResetter) ───────────
 
-  private async resetFormBetweenRows() {
-    // 1. Wait briefly for any success modal/overlay to fully render
-    await new Promise(r => setTimeout(r, POST_ROW_DELAY_MS));
-
-    // 2. Try to dismiss success modals/overlays by clicking common buttons
-    const dismissed = await this.dismissSuccessUI();
-    
-    if (dismissed) {
-      // Wait for form to reset after dismissal and DOM to stabilize
-      await new Promise(r => setTimeout(r, POST_DISMISS_RESET_WAIT_MS));
-      await SmartWaitEngine.waitForDOMStability(WAIT_DOM_STABLE_TIMEOUT).catch((err) => {
-        logger.debug('Executor', `Post-reset DOM stability wait timed out: ${err.message}`);
-      });
-      
-      // Check if the first form element is now available — retry up to 3 times with increasing waits
-      const firstStep = this.recordingSteps[0];
-      if (firstStep) {
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const formReady = SelectorEngine.findElement(firstStep.selectorMeta, firstStep.selector);
-          if (formReady) {
-            // Also verify the element is actually visible (not hidden in an inactive section)
-            const el = formReady.element as HTMLElement;
-            const rect = el.getBoundingClientRect();
-            const style = window.getComputedStyle(el);
-            const isBypass = el.tagName === "INPUT" && 
-              ["checkbox", "radio", "file"].includes((el as HTMLInputElement).type?.toLowerCase());
-            
-            if (
-              style.display !== "none" && 
-              style.visibility !== "hidden" &&
-              (isBypass || (rect.width > 0 && rect.height > 0))
-            ) {
-              // Verify no success overlay/modal is still active and blocking the screen
-              const overlays = document.querySelectorAll(
-                '.modal.show, .modal-backdrop, [class*="overlay"][class*="active"], #receipt-overlay.receipt-active'
-              );
-              const visibleOverlays = Array.from(overlays).filter(o => this.isElementVisible(o as HTMLElement));
-              
-              if (visibleOverlays.length > 0) {
-                logger.debug('Executor', `Form element found, but success overlay/modal is still visible. Waiting...`);
-              } else {
-                logger.debug('Executor', `Form reset successful (attempt ${attempt + 1}), ready for next row.`);
-                return;
-              }
-            }
-          }
-          // Wait progressively longer between checks (500ms, 1000ms, 1500ms)
-          await new Promise(r => setTimeout(r, FORM_READY_RETRY_STEP_MS * (attempt + 1)));
-        }
-      } else {
-        // No recorded steps to verify against, just proceed
-        logger.debug('Executor', 'No first step to verify, proceeding.');
-        return;
-      }
-    }
-
-    // 3. Fallback: navigate to original siteUrl to get a clean form
-    logger.info('Executor', 'In-page reset failed, navigating to start URL...');
-    
-    // Save state to service worker before navigation.
-    // Update currentUrl in the state to this.siteUrl since we are about to navigate there.
-    const updatedState = await StateManager.updateState({ currentUrl: this.siteUrl });
-    if (updatedState) {
-      await this.safeSendMessage({
-        type: MessageType.SET_EXECUTION_STATE,
-        payload: { state: updatedState },
-        sessionId: this.sessionId,
-        timestamp: Date.now()
-      }, 5000);
-    }
-
-    if (this.siteUrl && window.location.href !== this.siteUrl) {
-      window.location.href = this.siteUrl;
-      // BUG-021: No dead setTimeout needed — the executor instance is destroyed on navigation.
-      // Auto-resume picks up execution on the new page.
-    } else {
-      logger.info('Executor', 'Already at start URL, reloading the page to reset form...');
-      window.location.reload();
-    }
+  private async resetFormBetweenRows(): Promise<void> {
+    return this.formResetter.resetFormBetweenRows(this.recordingSteps, this.siteUrl, this.sessionId);
   }
 
-  private isElementVisible(el: HTMLElement): boolean {
-    const style = window.getComputedStyle(el);
-    if (
-      style.display === "none" ||
-      style.visibility === "hidden" ||
-      style.opacity === "0"
-    ) {
-      return false;
-    }
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-  /**
-   * Attempts to dismiss success modals, overlays, toasts, and alerts by
-   * finding and clicking common dismiss/close/ok/complete buttons.
-   * BUG-004: Scoped to detected modal/overlay containers only to avoid
-   * clicking active form buttons like "Next" or "Continue".
-   * Returns true if a dismiss button was found and clicked.
-   */
-  private async dismissSuccessUI(): Promise<boolean> {
-    // Strategy 1: Look for visible modal/overlay containers first
-    const modalContainerSelectors = [
-      '.modal.show', '.modal.active', '.modal[style*="display: block"]',
-      '.modal-backdrop + .modal', '[role="dialog"]', '.overlay.active',
-      '.toast.show', '.alert.show', '.alert-success',
-      '#receipt-overlay', '#receipt-overlay.receipt-active', '[class*="overlay"][class*="active"]',
-      '.success-modal', '.confirmation-modal'
-    ];
-
-    let modalContainer: Element | null = null;
-    for (const selector of modalContainerSelectors) {
-      const el = document.querySelector(selector);
-      if (el && this.isElementVisible(el as HTMLElement)) {
-        modalContainer = el;
-        break;
-      }
-    }
-
-    // Strategy 2: If a modal container was found, look for dismiss buttons INSIDE it
-    if (modalContainer) {
-      // Safe dismiss keywords — intentionally exclude 'next', 'continue' which are
-      // form navigation buttons that would advance the form prematurely
-      const dismissKeywords = ['complete', 'finish', 'done', 'close', 'ok', 'dismiss', 'got it'];
-      const buttons = Array.from(modalContainer.querySelectorAll('button, a.btn, [role="button"], input[type="button"]'));
-      
-      for (const btn of buttons) {
-        const text = (btn as HTMLElement).textContent?.trim().toLowerCase() || '';
-        const isVisible = this.isElementVisible(btn as HTMLElement);
-        
-        // Prevent partial word matches on short keywords (e.g. 'ok' matching 'book now')
-        const matchesKeyword = dismissKeywords.some(kw => {
-          if (kw.length <= 4) {
-            const regex = new RegExp(`\\b${kw}\\b`, 'i');
-            return regex.test(text);
-          }
-          return text.includes(kw);
-        });
-
-        if (isVisible && matchesKeyword) {
-          logger.debug('Executor', `Clicking dismiss button in modal: "${(btn as HTMLElement).textContent?.trim()}"`);
-          (btn as HTMLElement).click();
-          await new Promise(r => setTimeout(r, MODAL_DISMISS_CLICK_SETTLE_MS));
-          return true;
-        }
-      }
-
-      // Try close button selectors within modal
-      const closeSelectors = [
-        '.btn-close', '[data-dismiss="modal"]', '[data-bs-dismiss="modal"]',
-        '[aria-label="Close"]', '.close', '.modal-close'
-      ];
-      for (const selector of closeSelectors) {
-        const el = modalContainer.querySelector(selector);
-        if (el && this.isElementVisible(el as HTMLElement)) {
-          logger.debug('Executor', `Clicking close selector in modal: ${selector}`);
-          (el as HTMLElement).click();
-          await new Promise(r => setTimeout(r, MODAL_DISMISS_CLICK_SETTLE_MS));
-          return true;
-        }
-      }
-
-      // Strategy 3: Try pressing Escape key to close modals
-      modalContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await new Promise(r => setTimeout(r, MODAL_ESCAPE_SETTLE_MS));
-    }
-
-    // Check if any modal/overlay was dismissed
-    const overlays = document.querySelectorAll(
-      '.modal.show, .modal-backdrop, [class*="overlay"][class*="active"], #receipt-overlay.receipt-active'
-    );
-    const visibleOverlays = Array.from(overlays).filter(el => this.isElementVisible(el as HTMLElement));
-    if (visibleOverlays.length === 0) {
-      return true; // No visible overlays, consider it dismissed
-    }
-
-    return false;
+  async dismissSuccessUI(): Promise<boolean> {
+    return this.formResetter.dismissSuccessUI();
   }
 
   // ─── SINGLE ROW EXECUTION ──────────────────────────────────────────
 
   private async executeRow(row: ExcelRow, state: ExecutionState): Promise<"SUCCESS" | "FAILED" | "SKIPPED" | "ABORTED"> {
     logger.debug('Executor', `Processing row index: ${row.rowIndex}`);
-    
+
     let isRowSkipped = false;
     let stepIndex = state.currentStepIndex;
 
@@ -760,6 +520,20 @@ export class Executor {
           await new Promise(r => setTimeout(r, 200));
         }
         if (!this.isRunning) return "ABORTED";
+
+        // Post-Resume Recovery: Flush active element events & wait for portal calculations
+        if (document.activeElement && document.activeElement !== document.body) {
+          const activeEl = document.activeElement as HTMLElement;
+          if (['INPUT', 'SELECT', 'TEXTAREA'].includes(activeEl.tagName)) {
+            dispatchEvents(activeEl, ["change", "blur"]);
+            activeEl.blur();
+          }
+        }
+
+        await SmartWaitEngine.waitForDOMStability(500).catch((err) => {
+          logger.debug('Executor', `Post-resume DOM stability wait finished/timed out: ${err.message}`);
+        });
+
         state = await StateManager.updateState({ status: ExecutionStatus.RUNNING });
         this.broadcastStateUpdate(state);
       }
@@ -781,21 +555,25 @@ export class Executor {
       if (stepIndex > 0) {
         const prevStep = this.recordingSteps[stepIndex - 1];
         if (prevStep && (prevStep.action === Action.CLICK || prevStep.action === Action.NAVIGATE_NEXT)) {
-          const prevEl = SelectorEngine.findElement(prevStep.selectorMeta, prevStep.selector);
-          if (prevEl) {
-            const tagName = (prevEl.element as HTMLElement).tagName?.toLowerCase();
-            const textContent = (prevEl.element as HTMLElement).textContent?.toLowerCase() || '';
-            const isNavigationClick = tagName === 'button' || tagName === 'a' || 
-              (prevEl.element as HTMLElement).getAttribute('role') === 'button' ||
-              textContent.includes('next') || textContent.includes('continue') || 
-              textContent.includes('submit') || textContent.includes('proceed');
-            
-            if (isNavigationClick || prevStep.action === Action.NAVIGATE_NEXT) {
-              logger.debug('Executor', `Post-navigation DOM stability wait after step: ${prevStep.id}`);
-              await SmartWaitEngine.waitForDOMStability(WAIT_DOM_STABLE_TIMEOUT).catch((err) => {
-                logger.debug('Executor', `Post-navigation stability wait timed out: ${err.message}`);
-              });
+          let shouldWait = prevStep.action === Action.NAVIGATE_NEXT;
+          
+          if (!shouldWait) {
+            const prevEl = SelectorEngine.findElement(prevStep.selectorMeta, prevStep.selector);
+            if (prevEl) {
+              const tagName = (prevEl.element as HTMLElement).tagName?.toLowerCase();
+              const textContent = (prevEl.element as HTMLElement).textContent?.toLowerCase() || '';
+              shouldWait = tagName === 'button' || tagName === 'a' ||
+                (prevEl.element as HTMLElement).getAttribute('role') === 'button' ||
+                textContent.includes('next') || textContent.includes('continue') ||
+                textContent.includes('submit') || textContent.includes('proceed');
             }
+          }
+
+          if (shouldWait) {
+            logger.debug('Executor', `Post-navigation DOM stability wait after step: ${prevStep.id}`);
+            await SmartWaitEngine.waitForDOMStability(WAIT_DOM_STABLE_TIMEOUT).catch((err) => {
+              logger.debug('Executor', `Post-navigation stability wait timed out: ${err.message}`);
+            });
           }
         }
       }
@@ -819,10 +597,28 @@ export class Executor {
         const logStatus: LogStatus = (res.resolvedStatus as LogStatus) || "FILLED";
         const resultType = logStatus === "STEP_SKIPPED" ? StepResult.SKIPPED : StepResult.SUCCESS;
 
-        await this.safeSendMessage({
-          type: MessageType.ADD_LOG_ENTRY,
-          payload: {
-            entry: {
+        this.logBatcher.enqueue({
+          id: this.generateUUID(),
+          sessionId: this.sessionId,
+          timestamp: Date.now(),
+          rowIndex: row.rowIndex,
+          stepId: step.id,
+          action: step.action,
+          selector: step.selector,
+          selectorStrategy: res.selectorStrategy,
+          value: logStatus === "STEP_SKIPPED" ? undefined : res.resolvedValue ?? step.value,
+          result: resultType,
+          status: logStatus,
+          retryCount: res.retriesUsed,
+          duration
+        });
+
+        // 2. Perform immediate inline error validation check
+        const selectorResult = SelectorEngine.findElement(step.selectorMeta, step.selector);
+        if (selectorResult) {
+          const inlineErr = ResponseDetectionEngine.detectInlineError(selectorResult.element as HTMLElement);
+          if (inlineErr) {
+            this.logBatcher.enqueue({
               id: this.generateUUID(),
               sessionId: this.sessionId,
               timestamp: Date.now(),
@@ -830,44 +626,12 @@ export class Executor {
               stepId: step.id,
               action: step.action,
               selector: step.selector,
-              selectorStrategy: res.selectorStrategy,
-              value: logStatus === "STEP_SKIPPED" ? undefined : res.resolvedValue ?? step.value,
-              result: resultType,
-              status: logStatus,
-              retryCount: res.retriesUsed,
-              duration
-            }
-          },
-          sessionId: this.sessionId,
-          timestamp: Date.now()
-        }, 2000);
-
-        // 2. Perform immediate inline error validation check
-        const selectorResult = SelectorEngine.findElement(step.selectorMeta, step.selector);
-        if (selectorResult) {
-          const inlineErr = ResponseDetectionEngine.detectInlineError(selectorResult.element as HTMLElement);
-          if (inlineErr) {
-            await this.safeSendMessage({
-              type: MessageType.ADD_LOG_ENTRY,
-              payload: {
-                entry: {
-                  id: this.generateUUID(),
-                  sessionId: this.sessionId,
-                  timestamp: Date.now(),
-                  rowIndex: row.rowIndex,
-                  stepId: step.id,
-                  action: step.action,
-                  selector: step.selector,
-                  result: StepResult.FAILED,
-                  status: "WARN",
-                  error: `Inline field error: ${inlineErr}`,
-                  retryCount: 0,
-                  duration: 0
-                }
-              },
-              sessionId: this.sessionId,
-              timestamp: Date.now()
-            }, 2000);
+              result: StepResult.FAILED,
+              status: "WARN",
+              error: `Inline field error: ${inlineErr}`,
+              retryCount: 0,
+              duration: 0
+            });
           }
         }
 
@@ -877,9 +641,9 @@ export class Executor {
         }
 
         stepIndex++;
-        
+
         // 3. Save state Checkpoint after every successful step
-        state = await StateManager.updateState({ 
+        state = await StateManager.updateState({
           currentStepIndex: stepIndex,
           lastStepResult: res.resolvedStatus || "SUCCESS"
         });
@@ -890,27 +654,20 @@ export class Executor {
         if (res.classification === ErrorClassification.FATAL) {
           if (res.resolvedStatus === "ROW_SKIPPED") {
             // Option 1: Missing column / required value skip
-            await this.safeSendMessage({
-              type: MessageType.ADD_LOG_ENTRY,
-              payload: {
-                entry: {
-                  id: this.generateUUID(),
-                  sessionId: this.sessionId,
-                  timestamp: Date.now(),
-                  rowIndex: row.rowIndex,
-                  stepId: step.id,
-                  action: step.action,
-                  selector: step.selector,
-                  result: StepResult.SKIPPED,
-                  status: "ROW_SKIPPED",
-                  error: res.error?.message,
-                  retryCount: res.retriesUsed,
-                  duration
-                }
-              },
+            this.logBatcher.enqueue({
+              id: this.generateUUID(),
               sessionId: this.sessionId,
-              timestamp: Date.now()
-            }, 2000);
+              timestamp: Date.now(),
+              rowIndex: row.rowIndex,
+              stepId: step.id,
+              action: step.action,
+              selector: step.selector,
+              result: StepResult.SKIPPED,
+              status: "ROW_SKIPPED",
+              error: res.error?.message,
+              retryCount: res.retriesUsed,
+              duration
+            });
             isRowSkipped = true;
             break; // Break step loop to advance to next row
           } else {
@@ -922,9 +679,10 @@ export class Executor {
           // Escalates to page retry increment
           const isOverCap = await StateManager.incrementPageRetry(MAX_PAGE_RETRIES);
           state = (await StateManager.getState()) || state;
-          
+
           if (isOverCap) {
-            await this.logStepFailure(row.rowIndex, step, new Error("Page retry cap exceeded."));
+            const detailMsg = res.error?.message ? `Page retry cap exceeded: ${res.error.message}` : "Page retry cap exceeded.";
+            await this.logStepFailure(row.rowIndex, step, new Error(detailMsg));
             return "FAILED";
           } else {
             // Within retry limit: wait for DOM to stabilize and retry this same step
@@ -940,101 +698,9 @@ export class Executor {
       return "SKIPPED";
     }
 
-    // ─── SAFE SUBMIT-VERIFICATION ENGINE (SSVE) ─────────────────────
-    // After all recorded steps complete, verify the submission outcome.
-    // If the page is stuck (no success, no failure, no navigation),
-    // safely retry the submit action up to MAX_SUBMIT_RETRIES times.
-    // NEVER retries when validation errors are visible (useless) or
-    // when success is detected (would cause duplicate submissions).
-
-    const preSubmitUrl = window.location.href;
-    let submitRetryCount = 0;
-    let finalOutcome: "SUCCESS" | "FAILED" | "UNKNOWN" = "UNKNOWN";
-
-    while (submitRetryCount <= MAX_SUBMIT_RETRIES) {
-      if (!this.isRunning) return "ABORTED";
-
-      // 1. Wait for DOM to stabilize after submit
-      const settleMs = submitRetryCount === 0
-        ? POST_SUBMIT_SETTLE_MS
-        : SUBMIT_RETRY_SETTLE_MS;
-      await SmartWaitEngine.waitForDOMStability(settleMs).catch((err) => {
-        logger.debug('Executor', `Post-submit DOM stability wait timed out: ${err.message}`);
-      });
-
-      // 2. Run full detection (CAPTCHA + success + failure)
-      finalOutcome = await ResponseDetectionEngine.runSubmissionDetection(
-        window.location.href,
-        this.sessionId
-      );
-
-      // 3. Definitive outcome — stop immediately
-      if (finalOutcome === "SUCCESS" || finalOutcome === "FAILED") {
-        break;
-      }
-
-      // 4. Check if the URL changed (navigation occurred) — treat as success
-      if (window.location.href !== preSubmitUrl) {
-        logger.debug('Executor', `URL changed after submit (${preSubmitUrl} → ${window.location.href}), treating as SUCCESS.`);
-        finalOutcome = "SUCCESS";
-        break;
-      }
-
-      // 5. UNKNOWN outcome — page is stuck. Attempt safe retry if budget remains.
-      if (submitRetryCount < MAX_SUBMIT_RETRIES) {
-        submitRetryCount++;
-        logger.warn('Executor', `Submit verification inconclusive — page stuck on same URL. Safe retry ${submitRetryCount}/${MAX_SUBMIT_RETRIES}...`);
-
-        // Find and re-click the last submit/click/navigate step
-        const lastStep = this.recordingSteps[this.recordingSteps.length - 1];
-        if (lastStep) {
-          const retryRes = await RetryEngine.executeStepWithRetry(lastStep, row.data);
-          if (!retryRes.success) {
-            logger.warn('Executor', `Submit retry step failed: ${retryRes.error?.message}`);
-            finalOutcome = "FAILED";
-            break;
-          }
-        }
-      } else {
-        // Budget exhausted — treat as success if all steps completed
-        // (many forms simply don't show success banners)
-        break;
-      }
-    }
-
-    // If all recorded steps completed successfully and no explicit failure was
-    // detected on the page, treat the row as SUCCESS.  The old logic treated
-    // "UNKNOWN" (no success banner AND no failure banner) as FAILED, which
-    // incorrectly failed every row on forms that don't render a success modal.
-    const isRowSuccess = finalOutcome !== "FAILED";
-
-    // Only log a page_summary entry when the detection found an actual failure,
-    // so it doesn't pollute the logs with misleading "Submission check returned FAILED" entries.
-    if (!isRowSuccess) {
-      await this.safeSendMessage({
-        type: MessageType.ADD_LOG_ENTRY,
-        payload: {
-          entry: {
-            id: this.generateUUID(),
-            sessionId: this.sessionId,
-            timestamp: Date.now(),
-            rowIndex: row.rowIndex,
-            stepId: "row_summary",
-            action: Action.SUBMIT,
-            selector: "page_summary",
-            result: StepResult.FAILED,
-            status: "FAILED",
-            error: "Submission failure detected on page (error banners or validation errors visible).",
-            retryCount: 0,
-            duration: 0
-          }
-        },
-        sessionId: this.sessionId,
-        timestamp: Date.now()
-      }, 2000);
-    }
-
-    return isRowSuccess ? "SUCCESS" : "FAILED";
+    // Delegate the Safe Submit-Verification Engine to SubmitVerifier — see
+    // src/content/SubmitVerifier.ts for the full retry/detection sequence.
+    return this.submitVerifier.verifySubmission(this.recordingSteps, row, this.sessionId);
   }
 
   // ─── COMPLETION ────────────────────────────────────────────────────
@@ -1043,13 +709,15 @@ export class Executor {
    * Marks the execution session as complete, releases the mutex, and cleans up.
    */
   private async completeExecution() {
+    await this.logBatcher.flushNow();
+    
     const finalState = await StateManager.updateState({
       status: ExecutionStatus.COMPLETE,
       mutexLock: null // Release Mutex
     });
     this.broadcastStateUpdate(finalState);
 
-    chrome.runtime.sendMessage({
+    sendToBackground({
       type: MessageType.EXECUTION_COMPLETE,
       sessionId: this.sessionId,
       payload: { state: finalState },
@@ -1073,7 +741,7 @@ export class Executor {
   async resume() {
     this.isPaused = false;
     // Broadcast message to Service Worker so badge clears immediately on resume
-    chrome.runtime.sendMessage({
+    sendToBackground({
       type: MessageType.CLEAR_BADGE,
       sessionId: this.sessionId,
       payload: {},
@@ -1081,10 +749,10 @@ export class Executor {
     }).catch((err) => {
       logger.warn('Executor', 'CLEAR_BADGE message failed:', err);
     });
-    
+
     // Resolve any pending CAPTCHA promise
     ResponseDetectionEngine.forceResolveCaptcha();
-    
+
     logger.info('Executor', 'Resumed.');
 
     const state = await StateManager.updateState({ status: ExecutionStatus.RUNNING });
@@ -1097,7 +765,7 @@ export class Executor {
     logger.warn('Executor', 'Aborting...');
     this.isRunning = false;
     this.isPaused = false;
-    
+
     const finalState = await StateManager.getState();
     if (finalState) {
       // Broadcast the abort state to popup before clearing
@@ -1108,6 +776,7 @@ export class Executor {
       });
     }
 
+    await this.logBatcher.flushNow();
     await StateManager.clearSession();
     this.cleanup();
   }
@@ -1126,34 +795,28 @@ export class Executor {
         status: ExecutionStatus.FAILED,
         mutexLock: null // Release Mutex
       };
-      
+
       // Save log entry for the fatal error to IndexedDB so it shows in popup terminal
-      await this.safeSendMessage({
-        type: MessageType.ADD_LOG_ENTRY,
-        payload: {
-          entry: {
-            id: this.generateUUID(),
-            sessionId: this.sessionId,
-            timestamp: Date.now(),
-            rowIndex: state.currentRowIndex,
-            stepId: "SYSTEM",
-            action: Action.WAIT,
-            selector: "executor",
-            result: StepResult.FAILED,
-            status: "FAILED",
-            error: errMsg,
-            retryCount: 0,
-            duration: 0
-          }
-        },
+      this.logBatcher.enqueue({
+        id: this.generateUUID(),
         sessionId: this.sessionId,
-        timestamp: Date.now()
-      }, 5000).catch(() => {});
+        timestamp: Date.now(),
+        rowIndex: state.currentRowIndex,
+        stepId: "SYSTEM",
+        action: Action.WAIT,
+        selector: "executor",
+        result: StepResult.FAILED,
+        status: "FAILED",
+        error: errMsg,
+        retryCount: 0,
+        duration: 0
+      });
+      await this.logBatcher.flushNow();
 
       this.broadcastStateUpdate(failedState);
 
       // Notify service worker to clear badge icon
-      chrome.runtime.sendMessage({
+      sendToBackground({
         type: MessageType.EXECUTION_COMPLETE,
         sessionId: this.sessionId,
         payload: { state: failedState },
@@ -1162,7 +825,7 @@ export class Executor {
         logger.warn('Executor', 'Failed to notify service worker about fatal execution completion:', err);
       });
     }
-    
+
     await StateManager.clearSession();
     this.cleanup();
   }
@@ -1194,7 +857,7 @@ export class Executor {
   // ─── UTILITIES ─────────────────────────────────────────────────────
 
   private broadcastStateUpdate(state: ExecutionState) {
-    chrome.runtime.sendMessage({
+    sendToBackground({
       type: MessageType.STATE_UPDATE,
       sessionId: this.sessionId,
       payload: { state },

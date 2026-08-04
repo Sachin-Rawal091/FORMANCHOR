@@ -170,7 +170,7 @@ describe('SelectorEngine', () => {
     expect(result).not.toBeNull();
     expect(result!.element).toBe(nestedInput);
     expect(result!.strategy).toBe(SelectorStrategy.SHADOW_DOM);
-    expect(result!.confidence).toBe(0.6);
+    expect(result!.confidence).toBe(1.0);
     expect(result!.shadow).toBe(true);
   });
 

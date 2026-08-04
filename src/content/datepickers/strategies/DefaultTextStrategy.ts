@@ -11,22 +11,46 @@ export class DefaultTextStrategy implements FillStrategy {
     logger.info("DefaultTextStrategy", `Filling element with raw value "${rawValue}"`);
 
     if (el instanceof HTMLInputElement) {
-      setInputValue(el, rawValue);
+      el.focus();
+      try {
+        setInputValue(el, rawValue);
+      } finally {
+        el.blur();
+      }
     } else if (el instanceof HTMLTextAreaElement) {
-      setTextareaValue(el, rawValue);
+      el.focus();
+      try {
+        setTextareaValue(el, rawValue);
+      } finally {
+        el.blur();
+      }
     } else {
       const nestedInput = el.querySelector("input, textarea") as HTMLInputElement | HTMLTextAreaElement | null;
       if (nestedInput) {
         if (nestedInput instanceof HTMLInputElement) {
-          setInputValue(nestedInput, rawValue);
+          nestedInput.focus();
+          try {
+            setInputValue(nestedInput, rawValue);
+          } finally {
+            nestedInput.blur();
+          }
         } else {
-          setTextareaValue(nestedInput, rawValue);
+          nestedInput.focus();
+          try {
+            setTextareaValue(nestedInput, rawValue);
+          } finally {
+            nestedInput.blur();
+          }
         }
       } else {
         // Fallback for contenteditable or generic elements
         el.focus();
-        el.textContent = rawValue;
-        dispatchEvents(el, ["input", "change", "blur"]);
+        try {
+          el.textContent = rawValue;
+          dispatchEvents(el, ["input", "change"]);
+        } finally {
+          el.blur();
+        }
       }
     }
 

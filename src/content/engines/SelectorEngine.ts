@@ -84,6 +84,25 @@ export class SelectorEngine {
       }
     }
 
+    // 4.5. Button & Control Text Matching (0.88 confidence)
+    if (meta.labelText || meta.ariaLabel) {
+      const targetText = (meta.labelText || meta.ariaLabel || "").trim().toLowerCase();
+      if (targetText && targetText.length < 50) {
+        const candidateButtons = Array.from(
+          document.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit'], .btn")
+        ) as HTMLElement[];
+
+        const match = candidateButtons.find((btn) => {
+          const btnText = (btn.textContent || btn.getAttribute("aria-label") || (btn as HTMLInputElement).value || "").trim().toLowerCase();
+          return btnText === targetText;
+        });
+
+        if (match) {
+          evaluateResult({ element: match, strategy: SelectorStrategy.LABEL_LINKED, confidence: 0.88, shadow: false });
+        }
+      }
+    }
+
     // 5. Placeholder (0.8 confidence)
     if (meta.placeholder) {
       const el = document.querySelector(`[placeholder="${CSS.escape(meta.placeholder)}"]`);
@@ -138,25 +157,32 @@ export class SelectorEngine {
   ): SelectorResult | null {
     let elementsChecked = 0;
     let foundElement: Element | null = null;
+    let bestShadowConfidence = 0;
 
-    // Only traverse inside shadow roots — regular DOM was already checked in strategies 1-6
-    const matchesTarget = (el: Element): boolean => {
+    // Evaluate match confidence for Shadow DOM elements
+    const evaluateShadowMatch = (el: Element): number => {
+      if (meta.id && el.id === meta.id) {
+        return 1.0;
+      }
+      if (meta.name && el.getAttribute("name") === meta.name) {
+        return 0.95;
+      }
+      if (meta.ariaLabel && el.getAttribute("aria-label") === meta.ariaLabel) {
+        return 0.9;
+      }
+      if (meta.placeholder && el.getAttribute("placeholder") === meta.placeholder) {
+        return 0.8;
+      }
       if (primarySelector) {
         try {
           if (el.matches(primarySelector)) {
-            return true;
+            return 0.75;
           }
         } catch {
-          // Invalid primary selectors are ignored; metadata fallbacks continue.
+          // Invalid primary selectors are ignored
         }
       }
-
-      return !!(
-        (meta.id && el.id === meta.id) ||
-        (meta.name && el.getAttribute("name") === meta.name) ||
-        (meta.ariaLabel && el.getAttribute("aria-label") === meta.ariaLabel) ||
-        (meta.placeholder && el.getAttribute("placeholder") === meta.placeholder)
-      );
+      return 0;
     };
 
     const walkTree = (root: Node): void => {
@@ -167,13 +193,22 @@ export class SelectorEngine {
         const el = current as Element;
         elementsChecked++;
 
-        if (matchesTarget(el)) {
-          foundElement = el;
-          break;
-        }
-
         if (el.shadowRoot) {
-          walkTree(el.shadowRoot);
+          const shadowWalker = document.createTreeWalker(el.shadowRoot, NodeFilter.SHOW_ELEMENT);
+          let sCurrent = shadowWalker.nextNode();
+          while (sCurrent && !foundElement) {
+            const sEl = sCurrent as Element;
+            const conf = evaluateShadowMatch(sEl);
+            if (conf > 0) {
+              foundElement = sEl;
+              bestShadowConfidence = conf;
+              break;
+            }
+            if (sEl.shadowRoot) {
+              walkTree(sEl.shadowRoot);
+            }
+            sCurrent = shadowWalker.nextNode();
+          }
         }
 
         current = walker.nextNode();
@@ -186,7 +221,7 @@ export class SelectorEngine {
       return {
         element: foundElement,
         strategy: SelectorStrategy.SHADOW_DOM,
-        confidence: 0.6,
+        confidence: bestShadowConfidence || 0.6,
         shadow: true,
       };
     }

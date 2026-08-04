@@ -4,6 +4,7 @@ import { DatePickerEngine } from "../DatePickerEngine";
 import { DateParser } from "../DateParser";
 import { setInputValue, dispatchEvents } from "../../domUtils";
 import { DefaultTextStrategy } from "./DefaultTextStrategy";
+import { SmartWaitEngine } from "../../engines/SmartWaitEngine";
 import { logger } from "../../../utils/logger";
 
 export class DatePickerStrategy implements FillStrategy {
@@ -35,22 +36,48 @@ export class DatePickerStrategy implements FillStrategy {
     logger.info("DatePickerStrategy", `[Stage 2] Attempting direct Keyboard Commit sequence.`);
     const inputEl = el instanceof HTMLInputElement ? el : el.querySelector("input");
     if (inputEl instanceof HTMLInputElement) {
-      // Format value according to target format or default DD/MM/YYYY
-      const formattedVal = parsed.iso ? DateParser.format(parsed, "DD/MM/YYYY") : rawValue;
+      // Detect target format dynamically from element placeholder / attributes
+      const detectedFormat = DateParser.detectElementDateFormat(inputEl) || "DD/MM/YYYY";
+      const formattedVal = parsed.iso ? DateParser.format(parsed, detectedFormat) : rawValue;
+
+      // 1. Focus & open picker container so React/AntD/MUI/RMDP mounts component listeners
+      inputEl.focus();
+      const container = inputEl.closest('.ant-picker, .ant-picker-input, .MuiInputBase-root, .MuiFormControl-root, .rmdp-container, .datepicker, .date-picker, [class*="picker"]');
+      if (container) {
+        dispatchEvents(container as HTMLElement, ["mousedown", "mouseup", "click"]);
+        await SmartWaitEngine.waitForCondition(() => {
+          const popup = document.querySelector('.ant-picker-dropdown:not(.ant-picker-dropdown-hidden), .MuiPickersPopper-root, .rmdp-ep, [class*="popper"], [class*="picker"]');
+          return popup ? true : null;
+        }, 1000).catch(() => null);
+      }
+
       setInputValue(inputEl, formattedVal);
 
-      // Dispatch Enter key events
-      dispatchEvents(inputEl, ["keydown", "keypress", "keyup"]);
-      inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
-      inputEl.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+      // 2. Dispatch full Enter key sequence via centralized dispatchEvents
+      dispatchEvents(inputEl, ["keydown", "keypress", "keyup"], {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        charCode: 13,
+      });
 
-      // Dispatch blur to trigger React/Vue field commit
-      dispatchEvents(inputEl, ["blur"]);
+      // 3. Post-blur intrinsic value persistence verification
+      dispatchEvents(inputEl, ["blur", "focusout"]);
       inputEl.blur();
 
-      await new Promise(r => setTimeout(r, 100));
+      const committed = await SmartWaitEngine.waitForCondition(() => {
+        const valuePersisted = inputEl.value.trim() === formattedVal.trim();
+        if (valuePersisted) {
+          if (inputEl.closest('.ant-form-item-has-error')) {
+            logger.warn("DatePickerStrategy", "[Stage 2] Value persisted post-blur, but ant-form-item-has-error class still present.");
+          }
+          return true;
+        }
+        return null;
+      }, 1000).catch(() => null);
 
-      if (inputEl.value && inputEl.value.trim().length > 0) {
+      if (committed) {
         logger.info("DatePickerStrategy", `[Stage 2] Direct Keyboard Commit sequence succeeded with value "${inputEl.value}"`);
         return true;
       }

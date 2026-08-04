@@ -1,3 +1,5 @@
+import { InputNormalizer } from "./datepickers/InputNormalizer";
+
 /**
  * Utility functions for DOM manipulation, focusing on React-safe event dispatching.
  */
@@ -5,7 +7,11 @@
 /**
  * Dispatches a sequence of events to simulate a user action.
  */
-export function dispatchEvents(element: Element, eventTypes: string[]): void {
+export function dispatchEvents(
+  element: Element,
+  eventTypes: string[],
+  eventInit?: EventInit | KeyboardEventInit | MouseEventInit
+): void {
   eventTypes.forEach((type) => {
     let event;
     if (type.startsWith("mouse") || type === "click") {
@@ -14,12 +20,30 @@ export function dispatchEvents(element: Element, eventTypes: string[]): void {
         bubbles: true,
         cancelable: true,
         buttons: 1,
+        ...(eventInit as MouseEventInit),
       });
     } else if (type.startsWith("key")) {
       event = new KeyboardEvent(type, {
         bubbles: true,
         cancelable: true,
+        ...(eventInit as KeyboardEventInit),
       });
+    } else if (type === "input") {
+      // React 16/17/18 requires InputEvent (not generic Event) to trigger
+      // its synthetic onChange handler via delegated event listeners.
+      if (typeof InputEvent === "function") {
+        event = new InputEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+        });
+      } else {
+        // Fallback for environments where InputEvent is unavailable (e.g., minimal JSDOM)
+        event = new Event(type, {
+          bubbles: true,
+          cancelable: true,
+        });
+      }
     } else {
       event = new Event(type, {
         bubbles: true,
@@ -50,41 +74,37 @@ export function setCheckboxValue(input: HTMLInputElement, checked: boolean): voi
   setVal(checked);
   dispatchEvents(input, ["change", "input"]);
 }
+
 /**
  * Sets the value of an input element, bypassing React's value setter overloads.
  * This is crucial for filling out React/Vue controlled forms.
  */
 export function setInputValue(input: HTMLInputElement, value: string): void {
+  const finalValue = InputNormalizer.normalizeForInput(input, value);
+
   const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     "value"
   )?.set;
 
   if (nativeInputValueSetter) {
-    nativeInputValueSetter.call(input, value);
+    nativeInputValueSetter.call(input, finalValue);
   } else {
-    input.value = value;
+    input.value = finalValue;
   }
   dispatchEvents(input, ["input", "change"]);
 }
+import { DropdownMatcher, MatchResult } from "./engines/DropdownMatcher";
 
 /**
- * Sets the value of a select element, bypassing React's value setter overloads.
+ * Sets the value of a select element using the DropdownMatcher pipeline, bypassing React's value setter overloads.
+ * Returns the MatchResult for logging by the execution engine, or null if no selection was made.
  */
-export function setSelectValue(select: HTMLSelectElement, value: string): void {
-  const normalizedValue = value.trim().toLowerCase();
+export function setSelectValue(select: HTMLSelectElement, value: string): MatchResult | null {
+  const matchResult = DropdownMatcher.match(select, value);
   
-  // Find option that matches value or text case-insensitively
-  let targetValue = value;
-  for (let i = 0; i < select.options.length; i++) {
-    const opt = select.options[i];
-    if (
-      opt.value.trim().toLowerCase() === normalizedValue ||
-      opt.text.trim().toLowerCase() === normalizedValue
-    ) {
-      targetValue = opt.value;
-      break;
-    }
+  if (!matchResult.option) {
+    return null; // Ambiguous or no match found
   }
 
   const nativeSelectValueSetter = Object.getOwnPropertyDescriptor(
@@ -93,11 +113,13 @@ export function setSelectValue(select: HTMLSelectElement, value: string): void {
   )?.set;
 
   if (nativeSelectValueSetter) {
-    nativeSelectValueSetter.call(select, targetValue);
+    nativeSelectValueSetter.call(select, matchResult.option.value);
   } else {
-    select.value = targetValue;
+    select.value = matchResult.option.value;
   }
-  dispatchEvents(select, ["change"]);
+  dispatchEvents(select, ["input", "change"]);
+  
+  return matchResult;
 }
 
 /**

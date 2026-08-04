@@ -47,9 +47,17 @@ export class RmdpAdapter implements DatePickerAdapter {
   }
 
   async open(element: HTMLElement): Promise<boolean> {
-    // Invalidate cache when starting a new interaction
+    // Capture wrapper pointer BEFORE resetting active state so dismissStaleCalendars knows
+    // if a portaled wrapper belongs to a same-element retry
+    const previousWrapper = this.activeElement === element ? this.activeWrapper : null;
     this.activeWrapper = null;
     this.activeElement = element;
+
+    // BUG-042: Dismiss any stale RMDP calendar that may still be open from a
+    // previous datepicker field BEFORE checking if the current wrapper is open.
+    // Without this order, findWrapper() on adjacent inputs picks up the stale
+    // wrapper from the prior field and skips cleanup.
+    await this.dismissStaleCalendars(element, previousWrapper);
 
     // Check if the calendar is already open for this element (to avoid toggling it closed on click)
     const existingWrapper = this.findWrapper();
@@ -58,12 +66,6 @@ export class RmdpAdapter implements DatePickerAdapter {
       this.activeWrapper = existingWrapper;
       return true;
     }
-    
-    // BUG-042: Dismiss any stale RMDP calendar that may still be open from a
-    // previous datepicker field. Without this, findWrapper() on the second
-    // adjacent date input would pick up the first calendar's wrapper and
-    // navigate/select on the wrong picker — causing the execution to stall.
-    await this.dismissStaleCalendars(element);
 
     element.focus();
     dispatchEvents(element, ["focus", "focusin", "mousedown", "mouseup", "click"]);
@@ -152,25 +154,25 @@ export class RmdpAdapter implements DatePickerAdapter {
       return false;
     }
 
-    // BUG-042: Actively close the calendar after a successful day selection.
-    // Some rmdp configurations don't auto-close on single-date selection,
-    // leaving the calendar open. This blocks adjacent datepickers from opening
-    // their own calendar because findWrapper() picks up the stale wrapper.
+    // Actively close the calendar after date selection completes (single, range, or multi).
     const wrapper = this.findWrapper();
     if (wrapper) {
-      // Click outside the calendar to close it (rmdp listens for outside clicks).
-      // Must dispatch a real mousedown — RMDP's outside-click listener listens
-      // for "mousedown", and element.click() alone never fires it.
+      // 1. Blur target input immediately to trigger focus-loss close logic
+      element.blur();
+
+      // 2. Dispatch outside click on document.body for outside-click listeners
       dispatchEvents(document.body, ["mousedown", "mouseup", "click"]);
+
+      // 3. Fast poll for DOM detachment / visibility loss (200ms ceiling)
       await SmartWaitEngine.waitForCondition(() => {
-        return !this.findWrapper() ? true : null;
-      }, 1000).catch(() => {
-        // If still not closed, try clicking the input to toggle it closed
-        dispatchEvents(element, ["mousedown", "mouseup", "click"]);
-        logger.debug("RmdpAdapter", "Calendar didn't close on body click, toggled input to dismiss.");
-      });
-      // Small settle delay after calendar close
-      await new Promise(r => setTimeout(r, 200));
+        return !wrapper.isConnected || !this.isWrapperVisible(wrapper) ? true : null;
+      }, 200).catch(() => null);
+
+      // 4. Final safety: if wrapper is STILL connected to DOM, force-remove it
+      if (wrapper.isConnected) {
+        logger.debug("RmdpAdapter", "Calendar wrapper still connected after blur. Force-removing from DOM.");
+        wrapper.remove();
+      }
     }
 
     // Clear activeWrapper cache on completion
@@ -258,9 +260,19 @@ export class RmdpAdapter implements DatePickerAdapter {
     logger.debug("RmdpAdapter", `RMDP: visible wrappers = ${visibleWrappers.length}`);
 
     if (visibleWrappers.length === 1) {
+      const singleWrapper = visibleWrappers[0];
+      const singleContainer = singleWrapper.closest(".rmdp-container");
+      const activeContainer = this.activeElement?.closest(".rmdp-container");
+
+      // If both have containers and they differ, this is a stale wrapper from another field
+      if (singleContainer && activeContainer && singleContainer !== activeContainer) {
+        logger.debug("RmdpAdapter", "RMDP: single visible wrapper belongs to a different container, ignoring");
+        return null;
+      }
+
       logger.debug("RmdpAdapter", "RMDP: using single visible portaled wrapper");
-      this.activeWrapper = visibleWrappers[0];
-      return visibleWrappers[0];
+      this.activeWrapper = singleWrapper;
+      return singleWrapper;
     }
 
     if (visibleWrappers.length > 1) {
@@ -303,7 +315,7 @@ export class RmdpAdapter implements DatePickerAdapter {
    * before we open a new one. This prevents cross-contamination between adjacent
    * datepicker fields.
    */
-  private async dismissStaleCalendars(newElement: HTMLElement): Promise<void> {
+  private async dismissStaleCalendars(newElement: HTMLElement, previousWrapper: HTMLElement | null = null): Promise<void> {
     const allWrappers = Array.from(document.querySelectorAll(WRAPPER_SELECTOR)) as HTMLElement[];
     if (allWrappers.length === 0) return;
 
@@ -315,6 +327,11 @@ export class RmdpAdapter implements DatePickerAdapter {
 
     for (const wrapper of allWrappers) {
       if (!this.isWrapperVisible(wrapper)) continue;
+
+      // Same-element retry guard: do not dismiss the wrapper if it belongs to the exact element being retried
+      if (previousWrapper && wrapper === previousWrapper) {
+        continue;
+      }
 
       const wrapperContainer = wrapper.closest(".rmdp-container");
       if (wrapperContainer) {
@@ -364,6 +381,7 @@ export class RmdpAdapter implements DatePickerAdapter {
         const remaining = Array.from(document.querySelectorAll(WRAPPER_SELECTOR)) as HTMLElement[];
         const hasVisibleStale = remaining.some(w => {
           if (!this.isWrapperVisible(w)) return false;
+          if (previousWrapper && w === previousWrapper) return false;
           const c = w.closest(".rmdp-container");
           return !c || c !== targetContainer;
         });

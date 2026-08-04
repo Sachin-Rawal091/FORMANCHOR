@@ -1,5 +1,5 @@
 import { DatePickerAdapter } from "../DatePickerAdapter";
-import { dispatchEvents } from "../../domUtils";
+import { dispatchEvents, setInputValue } from "../../domUtils";
 import { SmartWaitEngine } from "../../engines/SmartWaitEngine";
 import { logger } from "../../../utils/logger";
 import { GENERIC_DATEPICKER_MAX_DISTANCE_PX } from "../../../shared/constants";
@@ -92,17 +92,34 @@ export class GenericDatePickerAdapter implements DatePickerAdapter {
       return false;
     }
 
-    const targetYear = targetDate.getUTCFullYear();
-    const targetMonth = targetDate.getUTCMonth();
+    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetDate.getMonth();
 
-    // 1. Try to find and parse the month/year header in the popup
+    // 1. Try direct year select dropdown / input if present in generic calendar (e.g. Flatpickr, jQuery UI)
+    const yearSelect = popup.querySelector("select.ui-datepicker-year, select.flatpickr-monthDropdown-months, input.cur-year, [class*='year']") as HTMLSelectElement | HTMLInputElement | null;
+    if (yearSelect) {
+      if (yearSelect instanceof HTMLSelectElement) {
+        const option = Array.from(yearSelect.options).find(opt => opt.value === String(targetYear) || opt.textContent?.trim() === String(targetYear));
+        if (option) {
+          yearSelect.value = option.value;
+          dispatchEvents(yearSelect, ["change", "input"]);
+          await new Promise(r => setTimeout(r, 50));
+        }
+      } else if (yearSelect instanceof HTMLInputElement) {
+        setInputValue(yearSelect, String(targetYear));
+        dispatchEvents(yearSelect, ["change", "input"]);
+        await new Promise(r => setTimeout(r, 50));
+      }
+    }
+
+    // 2. Try to find and parse the month/year header in the popup
     const headerInfo = this.findHeaderMonthYear(popup);
     if (!headerInfo) {
       logger.warn("GenericDatePickerAdapter", "Could not locate/parse month/year header in calendar. Skipping month navigation and proceeding to day selection directly.");
       return true; // Proceed directly (the correct month might already be displayed)
     }
 
-    // 2. Locate navigation buttons
+    // 3. Locate navigation buttons
     const navButtons = this.findNavButtons(popup);
     if (!navButtons.prev || !navButtons.next) {
       logger.warn("GenericDatePickerAdapter", "Could not locate month navigation buttons (prev/next) in calendar. Proceeding directly to day selection.");
@@ -110,7 +127,7 @@ export class GenericDatePickerAdapter implements DatePickerAdapter {
     }
 
     let attempts = 0;
-    const maxAttempts = 120; // 10 years max
+    const maxAttempts = 1200; // Allow up to 100 years of month-by-month navigation if dropdown is absent
 
     while (attempts < maxAttempts) {
       const currentHeader = this.findHeaderMonthYear(popup);
@@ -155,7 +172,7 @@ export class GenericDatePickerAdapter implements DatePickerAdapter {
       return false;
     }
 
-    const targetDayStr = String(targetDate.getUTCDate());
+    const targetDayStr = String(targetDate.getDate());
     const candidates = Array.from(popup.querySelectorAll("*")) as HTMLElement[];
 
     // Heuristically find day cells
@@ -208,6 +225,10 @@ export class GenericDatePickerAdapter implements DatePickerAdapter {
   }
 
   async verify(element: HTMLElement, targetDate: Date): Promise<boolean> {
+    const targetY = targetDate.getFullYear();
+    const targetM = targetDate.getMonth() + 1;
+    const targetD = targetDate.getDate();
+
     let checkAttempts = 0;
     const maxAttempts = 10;
 
@@ -215,13 +236,16 @@ export class GenericDatePickerAdapter implements DatePickerAdapter {
       const currentValue = this.normalizeNumbers((element as HTMLInputElement).value || "");
       if (currentValue) {
         const parsed = this.parseDateString(currentValue);
-        if (parsed &&
-            parsed.getUTCFullYear() === targetDate.getUTCFullYear() &&
-            parsed.getUTCMonth() === targetDate.getUTCMonth() &&
-            parsed.getUTCDate() === targetDate.getUTCDate()) {
-          logger.info("GenericDatePickerAdapter", `Verification passed! Value is "${currentValue}".`);
-          await this.closeCalendarIfOpen(element);
-          return true;
+        if (parsed) {
+          const parsedY = parsed.getUTCFullYear();
+          const parsedM = parsed.getUTCMonth() + 1;
+          const parsedD = parsed.getUTCDate();
+
+          if (parsedY === targetY && parsedM === targetM && parsedD === targetD) {
+            logger.info("GenericDatePickerAdapter", `Verification passed! Value is "${currentValue}".`);
+            await this.closeCalendarIfOpen(element);
+            return true;
+          }
         }
       }
       await new Promise((resolve) => setTimeout(resolve, 100));

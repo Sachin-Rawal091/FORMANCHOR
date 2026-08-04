@@ -2,6 +2,8 @@ import { Action, Step } from "../../types";
 import { ExecutionEngine } from "./ExecutionEngine";
 import { SmartWaitEngine } from "./SmartWaitEngine";
 import { getExecutionContext } from "./executionContext";
+import { InputVerifier } from "../InputVerifier";
+import { logger } from "../../utils/logger";
 import { WAIT_ELEMENT_TIMEOUT, MAX_STEP_RETRIES, RETRY_BACKOFF_BASE, RETRY_BACKOFF_MAX } from "../../shared/constants";
 
 export enum ErrorClassification {
@@ -89,6 +91,36 @@ export class RetryEngine {
         const el = selectorResult.element as HTMLElement;
         const isValueAction = [Action.FILL, Action.SELECT, Action.DATEPICKER, Action.SELECT_RADIO, Action.TOGGLE_CHECKBOX].includes(step.action);
         if (isValueAction && !RetryEngine.isElementInteractable(el)) {
+          if (resolution.value !== null && resolution.value !== undefined) {
+            let verification = InputVerifier.verify(el, resolution.value);
+
+            // Fast dynamic poll for cold-start calculation delay (Row 1)
+            if (!verification.pass) {
+              const start = Date.now();
+              const DYNAMIC_POLL_TIMEOUT_MS = 1500;
+              const DYNAMIC_POLL_INTERVAL_MS = 100;
+
+              while (Date.now() - start < DYNAMIC_POLL_TIMEOUT_MS) {
+                await new Promise(r => setTimeout(r, DYNAMIC_POLL_INTERVAL_MS));
+                verification = InputVerifier.verify(el, resolution.value);
+                if (verification.pass) break;
+              }
+            }
+
+            if (verification.pass) {
+              logger.info(
+                "RetryEngine",
+                `Element is non-interactable (disabled/readonly), but contains verified expected value. Expected: "${verification.expected}" | Actual: "${verification.actual}" | Status: FILLED_READONLY`
+              );
+              return {
+                success: true,
+                resolvedStatus: "FILLED_READONLY",
+                retriesUsed: attempt,
+                selectorStrategy: selectorResult.strategy,
+                resolvedValue: resolution.value ?? undefined
+              };
+            }
+          }
           throw new Error("Element is disabled or non-interactable in the current page state.");
         }
 
@@ -238,10 +270,12 @@ export class RetryEngine {
       
       const isDisabled = 
         current.hasAttribute("disabled") ||
+        current.hasAttribute("readonly") ||
+        (current as HTMLInputElement).readOnly ||
         current.getAttribute("aria-disabled") === "true" ||
         current.classList.contains("disabled") ||
         current.classList.contains("disabled_date_picker") ||
-        (current === el && /disabled/i.test(current.className || ""));
+        (current === el && /disabled|readonly/i.test(current.className || ""));
         
       if (isDisabled) {
         return false;
