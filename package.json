@@ -1,5 +1,5 @@
 {
-  "name": "formpilot",
+  "name": "form-anchor",
   "version": "1.0.0",
   "description": "Production-grade Chrome Extension that eliminates manual form filling at scale.",
   "main": "src/popup/main.tsx",
@@ -11,7 +11,7 @@
   },
   "keywords": [],
   "author": "Sachin Rawal",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
