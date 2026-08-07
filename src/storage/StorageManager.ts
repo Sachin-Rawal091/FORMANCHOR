@@ -1,5 +1,5 @@
 import { getDB } from './db';
-import { LOG_MAX_ENTRIES, LOG_RETENTION_DAYS } from '../shared/constants';
+import { LOG_RETENTION_DAYS } from '../shared/constants';
 import { 
   ExecutionState, 
   Recording, 
@@ -21,7 +21,18 @@ export function isContentScript(): boolean {
 }
 
 class StorageManagerImpl {
+  static sequenceCounter = Date.now();
   
+  async initStorage(): Promise<void> {
+    if (typeof chrome !== 'undefined' && chrome.storage?.session?.setAccessLevel) {
+      try {
+        await chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+      } catch (err) {
+        logger.debug('StorageManager', 'Failed to set session storage access level:', err);
+      }
+    }
+  }
+
   // --- Session Storage (Volatile, per-session) ---
   async getExecutionState(): Promise<ExecutionState | null> {
     if (isContentScript()) {
@@ -33,8 +44,11 @@ class StorageManagerImpl {
       });
       return response ? (response as any).state : null;
     }
-    const data = await chrome.storage.session.get('executionState');
-    return (data.executionState as ExecutionState) || null;
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      const data = await chrome.storage.session.get('executionState');
+      return (data.executionState as ExecutionState) || null;
+    }
+    return null;
   }
 
   async setExecutionState(state: ExecutionState): Promise<void> {
@@ -47,10 +61,12 @@ class StorageManagerImpl {
       });
       return;
     }
-    if (state === null) {
-      await chrome.storage.session.remove('executionState');
-    } else {
-      await chrome.storage.session.set({ executionState: state });
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      if (state === null) {
+        await chrome.storage.session.remove('executionState');
+      } else {
+        await chrome.storage.session.set({ executionState: state });
+      }
     }
   }
 
@@ -64,7 +80,9 @@ class StorageManagerImpl {
       });
       return;
     }
-    await chrome.storage.session.remove('executionState');
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      await chrome.storage.session.remove('executionState');
+    }
   }
 
   async getRecordingState(): Promise<RecordingState | null> {
@@ -77,8 +95,17 @@ class StorageManagerImpl {
       });
       return response ? (response as any).recordingState : null;
     }
-    const data = await chrome.storage.session.get('recordingState');
-    return (data.recordingState as RecordingState) || null;
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      const data = await chrome.storage.session.get('recordingState');
+      const state = (data.recordingState as RecordingState) || null;
+      if (!state || !state.isRecording) {
+        if (chrome.storage.local) {
+          await chrome.storage.local.set({ isRecordingActive: false });
+        }
+      }
+      return state;
+    }
+    return null;
   }
 
   async setRecordingState(state: RecordingState): Promise<void> {
@@ -86,14 +113,18 @@ class StorageManagerImpl {
       const isActive = !!(state && state.isRecording);
       await chrome.storage.local.set({ isRecordingActive: isActive });
     }
-    await chrome.storage.session.set({ recordingState: state });
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      await chrome.storage.session.set({ recordingState: state });
+    }
   }
 
   async clearRecordingState(): Promise<void> {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       await chrome.storage.local.set({ isRecordingActive: false });
     }
-    await chrome.storage.session.remove('recordingState');
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      await chrome.storage.session.remove('recordingState');
+    }
   }
 
 
@@ -124,11 +155,22 @@ class StorageManagerImpl {
     await tx.done;
   }
 
-  async getExcelData(afterRowIndex?: number, limit?: number): Promise<ExcelRow[]> {
+  async getExcelData(options?: { startRowIndex?: number; afterRowIndex?: number; limit?: number } | number, limitParam?: number): Promise<ExcelRow[]> {
+    let startRowIndex: number | undefined;
+    let limit: number | undefined;
+
+    if (typeof options === "object" && options !== null) {
+      startRowIndex = options.startRowIndex !== undefined ? options.startRowIndex : (options.afterRowIndex !== undefined ? options.afterRowIndex + 1 : undefined);
+      limit = options.limit;
+    } else {
+      startRowIndex = options !== undefined ? options + 1 : undefined;
+      limit = limitParam;
+    }
+
     if (isContentScript()) {
       const response = await sendToBackground({
         type: MessageType.GET_EXCEL_DATA,
-        payload: { afterRowIndex, limit },
+        payload: { startRowIndex, limit },
         sessionId: "",
         timestamp: Date.now()
       });
@@ -137,13 +179,21 @@ class StorageManagerImpl {
     const db = await getDB();
     const tx = db.transaction('excelData', 'readonly');
     const store = tx.objectStore('excelData');
-    
+
     let encryptedRows: any[] = [];
     if (limit !== undefined) {
-      const range = afterRowIndex !== undefined ? IDBKeyRange.lowerBound(afterRowIndex, true) : null;
+      const range = startRowIndex !== undefined ? IDBKeyRange.lowerBound(startRowIndex) : null;
       let cursor = await store.openCursor(range);
-      
+
       while (cursor && encryptedRows.length < limit) {
+        encryptedRows.push(cursor.value);
+        cursor = await cursor.continue();
+      }
+    } else if (startRowIndex !== undefined) {
+      const range = IDBKeyRange.lowerBound(startRowIndex);
+      let cursor = await store.openCursor(range);
+
+      while (cursor) {
         encryptedRows.push(cursor.value);
         cursor = await cursor.continue();
       }
@@ -158,15 +208,19 @@ class StorageManagerImpl {
           const decrypted = await decryptValue(row.encryptedBlob);
           decryptedRows.push({
             rowIndex: row.rowIndex,
-            data: decrypted.data,
-            status: decrypted.status,
-            isValid: decrypted.isValid,
-            validationErrors: decrypted.validationErrors,
+            data: decrypted.data || (row as any).data || decrypted,
+            status: decrypted.status || row.status,
+            isValid: decrypted.isValid !== undefined ? decrypted.isValid : true,
+            validationErrors: decrypted.validationErrors || [],
             error: decrypted.error
           });
         } catch (err) {
-          logger.error('StorageManager', `Failed to decrypt excel row ${row.rowIndex}:`, err);
-          throw err;
+          logger.warn('StorageManager', `Failed to decrypt excel row ${row.rowIndex}, using fallback row data:`, err);
+          if ((row as any).data) {
+            decryptedRows.push(row);
+          } else {
+            throw err;
+          }
         }
       } else {
         // Fallback for unencrypted legacy rows
@@ -190,16 +244,28 @@ class StorageManagerImpl {
     // before the subsequent .put() calls, resulting in:
     // "Failed to execute 'objectStore' on 'IDBTransaction': The transaction has finished."
     const encryptedRows = await Promise.all(
-      rows.map(async (row) => ({
-        rowIndex: row.rowIndex,
-        encryptedBlob: await encryptValue({
+      rows.map(async (row) => {
+        let encryptedBlob;
+        try {
+          encryptedBlob = await encryptValue({
+            data: row.data,
+            status: row.status,
+            isValid: row.isValid,
+            validationErrors: row.validationErrors,
+            error: row.error
+          });
+        } catch (e) {}
+        
+        return {
+          rowIndex: row.rowIndex,
           data: row.data,
           status: row.status,
           isValid: row.isValid,
           validationErrors: row.validationErrors,
-          error: row.error
-        })
-      }))
+          error: row.error,
+          encryptedBlob
+        };
+      })
     );
 
     const db = await getDB();
@@ -213,21 +279,67 @@ class StorageManagerImpl {
     await tx.done;
   }
 
-  async addLogEntry(entry: LogEntry): Promise<void> {
+  async addLogEntries(entries: LogEntry[]): Promise<void> {
+    if (entries.length === 0) return;
     const db = await getDB();
-    const sanitizedEntry: LogEntry = {
-      ...entry,
-      value: sanitizeLogText(entry.value),
-      error: sanitizeLogText(entry.error)
-    };
-    await db.put('logs', sanitizedEntry);
-    // Deterministic cleanup: run only when log count exceeds maxEntries with 5% buffer
-    const count = await db.count('logs');
-    const settings = await this.getUserSettings();
-    const maxEntries = settings?.logMaxEntries ?? LOG_MAX_ENTRIES;
-    if (count > maxEntries * 1.05) {
-      this.cleanupLogs().catch(err => logger.error('StorageManager', 'Log cleanup failed:', err));
+    
+    const tx = db.transaction('logs', 'readwrite');
+    const store = tx.store;
+    
+    // Sort by batchIndex to preserve intra-batch order
+    entries.sort((a, b) => (a.batchIndex || 0) - (b.batchIndex || 0));
+    
+    const putPromises = entries.map((entry) => {
+      const sanitizedEntry: LogEntry = {
+        ...entry,
+        value: sanitizeLogText(entry.value),
+        error: sanitizeLogText(entry.error),
+        sequence: ++StorageManagerImpl.sequenceCounter
+      };
+      return store.put(sanitizedEntry);
+    });
+    
+    await Promise.all(putPromises);
+    await tx.done;
+  }
+
+  async sweepPendingFallbackLogs(): Promise<void> {
+    if (isContentScript()) return;
+    
+    const allKeys = await chrome.storage.local.get(null);
+    const fallbackKeys = Object.keys(allKeys).filter(k => k.startsWith('__fp_pending_logs_'));
+    if (fallbackKeys.length === 0) return;
+    
+    let entriesToRecover: LogEntry[] = [];
+    for (const key of fallbackKeys) {
+      const batch = allKeys[key];
+      if (Array.isArray(batch)) {
+        entriesToRecover = entriesToRecover.concat(batch);
+      }
     }
+    
+    if (entriesToRecover.length > 0) {
+      // Group by session ID to process correctly
+      const bySession = entriesToRecover.reduce((acc, entry) => {
+        const sid = entry.sessionId;
+        if (!acc[sid]) acc[sid] = [];
+        acc[sid].push(entry);
+        return acc;
+      }, {} as Record<string, LogEntry[]>);
+      
+      for (const sid of Object.keys(bySession)) {
+        const sessionEntries = bySession[sid];
+        // Sort by timestamp then batch index to reconstruct best possible order
+        sessionEntries.sort((a, b) => {
+          if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+          return (a.batchIndex || 0) - (b.batchIndex || 0);
+        });
+        await this.addLogEntries(sessionEntries);
+      }
+    }
+    
+    await chrome.storage.local.remove(fallbackKeys);
+    logger.info('StorageManager', `Swept and recovered ${entriesToRecover.length} fallback logs from local storage across ${fallbackKeys.length} batches.`);
   }
 
   async cleanupLogs(): Promise<void> {
@@ -238,56 +350,59 @@ class StorageManagerImpl {
     
     // Read limits from settings OUTSIDE of the transaction
     const settings = await this.getUserSettings();
-    const maxEntries = settings?.logMaxEntries ?? LOG_MAX_ENTRIES;
     const retentionDays = settings?.logRetentionDays ?? LOG_RETENTION_DAYS;
     const cutoffTime = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
-
-    const totalCount = await db.count('logs');
-    const overLimit = totalCount - maxEntries;
 
     const tx = db.transaction('logs', 'readwrite');
     const index = tx.store.index('timestamp');
     let cursor = await index.openCursor();
     
-    let deletedCount = 0;
     while (cursor) {
       const log = cursor.value;
-      const shouldDelete = (overLimit > 0 && deletedCount < overLimit) || log.timestamp < cutoffTime;
       
-      if (shouldDelete) {
+      if (log.timestamp < cutoffTime) {
         await cursor.delete();
-        deletedCount++;
         cursor = await cursor.continue();
       } else {
-        // Since the index is sorted by timestamp ascending, once we are:
-        // 1. Below the maximum entry limit (deletedCount >= overLimit) AND
-        // 2. The current log's timestamp is >= cutoffTime
-        // We can safely stop since all subsequent logs are also >= cutoffTime
+        // Since the index is sorted by timestamp ascending, once we hit a log
+        // that is newer than cutoffTime, all subsequent logs are also newer.
         break;
       }
     }
     await tx.done;
   }
 
-  async getLogs(sessionId: string, offset = 0, limit = 500): Promise<LogEntry[]> {
+  async getLogs(sessionId: string, offset = 0, limit = 0): Promise<LogEntry[]> {
+    await this.sweepPendingFallbackLogs();
+    
     const db = await getDB();
+    // 1. Fetch all for session to correctly sort by sequence since we may not have a sessionSequence index
     const tx = db.transaction('logs', 'readonly');
-    const index = tx.store.index('sessionTimestamp');
-    const rows: LogEntry[] = [];
-    const range = IDBKeyRange.bound([sessionId, 0], [sessionId, 2e15]);
-    let skipped = 0;
-    let cursor = await index.openCursor(range, 'prev');
-
-    while (cursor && rows.length < limit) {
-      if (skipped < offset) {
-        skipped++;
-      } else {
-        rows.push(cursor.value);
-      }
+    const index = tx.store.index('sessionId');
+    const allSessionLogs: LogEntry[] = [];
+    let cursor = await index.openCursor(IDBKeyRange.only(sessionId));
+    
+    while (cursor) {
+      allSessionLogs.push(cursor.value);
       cursor = await cursor.continue();
     }
-
-    return rows;
+    
+    // Sort primarily by timestamp (ascending), then by sequence as tie-breaker
+    // This perfectly matches exact chronological order even if sequence is assigned later
+    allSessionLogs.sort((a, b) => {
+      if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+      return (a.sequence || 0) - (b.sequence || 0);
+    });
+    
+    // We sort ascending but want descending (most recent first) for getLogs, actually wait!
+    // The previous implementation did: cursor = await index.openCursor(range, 'prev');
+    // So getLogs expects descending (most recent first)!
+    allSessionLogs.reverse();
+    
+    if (limit && limit > 0) {
+      return allSessionLogs.slice(offset, offset + limit);
+    }
+    return offset > 0 ? allSessionLogs.slice(offset) : allSessionLogs;
   }
 
   async hasSessionFailures(sessionId: string): Promise<boolean> {
