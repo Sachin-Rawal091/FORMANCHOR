@@ -28,25 +28,62 @@ export class KeyVersionMismatchError extends Error {
 // Web Crypto handle.
 async function getOrCreateKey(): Promise<CryptoKey> {
   if (typeof indexedDB === 'undefined' || (typeof process !== 'undefined' && process.env.VITEST === 'true')) {
-    // Test/non-browser environment — ephemeral in-memory key, cached for the
-    // life of the process so encrypt/decrypt pairs actually round-trip.
     if (!ephemeralKeyPromise) {
       ephemeralKeyPromise = crypto.subtle.generateKey({ name: KEY_ALGO, length: KEY_LEN }, true, ['encrypt', 'decrypt']);
     }
     return ephemeralKeyPromise;
   }
 
+  // 1. Check chrome.storage.local first to share exact key across Popup, SW, and Content script realms
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    try {
+      const stored = await chrome.storage.local.get('__fp_master_key_jwk__');
+      if (stored.__fp_master_key_jwk__) {
+        return await crypto.subtle.importKey(
+          'jwk',
+          stored.__fp_master_key_jwk__,
+          { name: KEY_ALGO, length: KEY_LEN },
+          true,
+          ['encrypt', 'decrypt']
+        );
+      }
+    } catch (e) {
+      logger.debug('Crypto', 'Failed to read key from chrome.storage.local:', e);
+    }
+  }
+
+  // 2. Check IndexedDB fallback
   const db = await getDB();
-
   const existing = await db.get(KEYS_STORE, KEY_ID);
-  if (existing) return existing as CryptoKey;
+  if (existing) {
+    // Also sync to chrome.storage.local if extractable
+    try {
+      if ((existing as CryptoKey).extractable && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const jwk = await crypto.subtle.exportKey('jwk', existing as CryptoKey);
+        await chrome.storage.local.set({ __fp_master_key_jwk__: jwk });
+      }
+    } catch (e) {}
+    return existing as CryptoKey;
+  }
 
+  // 3. Generate extractable shared key
   const key = await crypto.subtle.generateKey(
     { name: KEY_ALGO, length: KEY_LEN },
-    false, // extractable: false — this is the whole point
+    true,
     ['encrypt', 'decrypt']
   );
-  await db.put(KEYS_STORE, key, KEY_ID);
+  
+  try {
+    await db.put(KEYS_STORE, key, KEY_ID);
+  } catch (e) {}
+
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    try {
+      const jwk = await crypto.subtle.exportKey('jwk', key);
+      await chrome.storage.local.set({ __fp_master_key_jwk__: jwk });
+    } catch (e) {}
+  }
+
   return key;
 }
 
@@ -68,9 +105,13 @@ export async function encryptValue(obj: any): Promise<{ keyVersion: number; iv: 
 }
 
 export async function decryptValue(encrypted: { keyVersion?: number; iv: number[]; ct: number[] }): Promise<any> {
-  // Unreachable today — no v2 scheme exists — but this guard means a future
-  // scheme change fails loud and distinct instead of being silently treated
-  // as "key is gone" and wiped by the recovery path.
+  if (!encrypted || typeof encrypted !== 'object') {
+    return encrypted;
+  }
+  // If object is already unencrypted row data
+  if ((encrypted as any).data && !(encrypted as any).ct) {
+    return encrypted;
+  }
   if (encrypted.keyVersion !== undefined && encrypted.keyVersion !== CURRENT_KEY_VERSION) {
     throw new KeyVersionMismatchError(encrypted.keyVersion, CURRENT_KEY_VERSION);
   }
@@ -83,7 +124,10 @@ export async function decryptValue(encrypted: { keyVersion?: number; iv: number[
     );
     return JSON.parse(new TextDecoder().decode(plainBuffer));
   } catch (err) {
-    logger.error('Crypto', 'Decryption failed:', err);
+    logger.warn('Crypto', 'Subtle decrypt failed, checking fallback:', err);
+    if ((encrypted as any).data) {
+      return encrypted;
+    }
     throw err;
   }
 }

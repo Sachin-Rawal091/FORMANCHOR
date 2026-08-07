@@ -6,7 +6,7 @@
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
-const LOG_PREFIX = '[FormPilot]';
+const LOG_PREFIX = '[FormAnchor]';
 
 // Default to INFO in production, DEBUG in development
 const CURRENT_LEVEL: LogLevel = (() => {
