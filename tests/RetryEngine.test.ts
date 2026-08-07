@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RetryEngine, ErrorClassification } from '../src/content/engines/RetryEngine';
 import { SmartWaitEngine } from '../src/content/engines/SmartWaitEngine';
 import { ExecutionEngine } from '../src/content/engines/ExecutionEngine';
@@ -189,5 +189,151 @@ describe('RetryEngine', () => {
     const result = await RetryEngine.executeStepWithRetry(step, {});
     expect(result.success).toBe(false);
     expect(result.classification).toBe(ErrorClassification.FATAL);
+  });
+
+  describe('Pause & Resume Execution Handling', () => {
+    afterEach(() => {
+      delete (globalThis as any).__FP_EXECUTOR_INSTANCE__;
+    });
+
+    it('should park execution at retry loop entry while paused and resume when unpaused', async () => {
+      const step: Step = {
+        id: 'pause-s1',
+        action: Action.FILL,
+        selector: '#inp',
+        selectorMeta: {},
+        pageId: 'p1',
+      };
+
+      const mockElement = document.createElement('input');
+      const mockResult: SelectorResult = { element: mockElement, strategy: SelectorStrategy.ID, confidence: 1.0, shadow: false };
+
+      const waitSpy = vi.spyOn(SmartWaitEngine, 'waitForElementVisible').mockResolvedValue(mockResult);
+      vi.spyOn(ExecutionEngine, 'executeAction').mockResolvedValue(undefined);
+
+      // Start paused
+      const executorMock = { isRunning: true, isPaused: true };
+      (globalThis as any).__FP_EXECUTOR_INSTANCE__ = executorMock;
+
+      // Start step execution in background promise
+      const execPromise = RetryEngine.executeStepWithRetry(step, {});
+
+      // Verify element search has not been called yet because we are parked in pause loop
+      await new Promise(r => setTimeout(r, 100));
+      expect(waitSpy).not.toHaveBeenCalled();
+
+      // Resume execution after delay
+      executorMock.isPaused = false;
+
+      const result = await execPromise;
+      expect(result.success).toBe(true);
+      expect(result.retriesUsed).toBe(0);
+      expect(waitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should abort execution if aborted while parked in pause loop at retry entry', async () => {
+      const step: Step = {
+        id: 'pause-abort-s2',
+        action: Action.FILL,
+        selector: '#inp',
+        selectorMeta: {},
+        pageId: 'p1',
+      };
+
+      const waitSpy = vi.spyOn(SmartWaitEngine, 'waitForElementVisible');
+
+      const executorMock = { isRunning: true, isPaused: true };
+      (globalThis as any).__FP_EXECUTOR_INSTANCE__ = executorMock;
+
+      const execPromise = RetryEngine.executeStepWithRetry(step, {});
+
+      // Simulate abort event while paused
+      setTimeout(() => {
+        executorMock.isRunning = false;
+      }, 100);
+
+      const result = await execPromise;
+      expect(result.success).toBe(false);
+      expect(result.classification).toBe(ErrorClassification.FATAL);
+      expect(result.error?.message).toContain('Execution aborted');
+      expect(waitSpy).not.toHaveBeenCalled();
+    });
+
+    it('should park and adjust budget during pause in readonly verification dynamic poll loop', async () => {
+      const step: Step = {
+        id: 'pause-readonly-s3',
+        action: Action.FILL,
+        selector: '#readonly-inp',
+        selectorMeta: {},
+        columnName: 'readonly-inp',
+        pageId: 'p1',
+      };
+
+      const mockElement = document.createElement('input');
+      mockElement.setAttribute('readonly', 'true');
+      mockElement.value = ''; // Initial value empty -> verification fails initially
+
+      const mockResult: SelectorResult = { element: mockElement, strategy: SelectorStrategy.ID, confidence: 1.0, shadow: false };
+
+      vi.spyOn(SmartWaitEngine, 'waitForElementVisible').mockResolvedValue(mockResult);
+
+      const executorMock = { isRunning: true, isPaused: false };
+      (globalThis as any).__FP_EXECUTOR_INSTANCE__ = executorMock;
+
+      // Start execution with expected value "284.45"
+      const execPromise = RetryEngine.executeStepWithRetry(step, { 'readonly-inp': '284.45' });
+
+      // Pause mid-poll
+      setTimeout(() => {
+        executorMock.isPaused = true;
+      }, 50);
+
+      // Supply expected value and unpause after delay
+      setTimeout(() => {
+        mockElement.value = '284.45';
+        executorMock.isPaused = false;
+      }, 350);
+
+      const result = await execPromise;
+      expect(result.success).toBe(true);
+      expect(result.resolvedStatus).toBe('FILLED_READONLY');
+    });
+
+    it('should park during retry backoff sleep when paused and resume backoff when unpaused', async () => {
+      const step: Step = {
+        id: 'pause-backoff-s4',
+        action: Action.FILL,
+        selector: '#inp',
+        selectorMeta: {},
+        pageId: 'p1',
+        maxRetries: 1,
+      };
+
+      const mockElement = document.createElement('input');
+      const mockResult: SelectorResult = { element: mockElement, strategy: SelectorStrategy.ID, confidence: 1.0, shadow: false };
+
+      vi.spyOn(SmartWaitEngine, 'waitForElementVisible')
+        .mockRejectedValueOnce(new Error('Temporary DOM error'))
+        .mockResolvedValueOnce(mockResult);
+
+      vi.spyOn(ExecutionEngine, 'executeAction').mockResolvedValue(undefined);
+
+      const executorMock = { isRunning: true, isPaused: false };
+      (globalThis as any).__FP_EXECUTOR_INSTANCE__ = executorMock;
+
+      // Pause during backoff sleep after first failure
+      setTimeout(() => {
+        executorMock.isPaused = true;
+      }, 50);
+
+      // Unpause after delay
+      setTimeout(() => {
+        executorMock.isPaused = false;
+      }, 350);
+
+      const result = await RetryEngine.executeStepWithRetry(step, {});
+      expect(result.success).toBe(true);
+      expect(result.retriesUsed).toBe(1);
+    });
   });
 });

@@ -43,12 +43,12 @@ describe('DataHandler Unit Tests', () => {
     const msg = {
       type: MessageType.GET_EXCEL_DATA,
       sessionId: 'sess-1',
-      payload: { afterRowIndex: 0, limit: 5 },
+      payload: { startRowIndex: 0, limit: 5 },
       timestamp: Date.now()
     };
 
     await DataHandler.handleGetExcelData(msg, mockSendResponse);
-    expect(StorageManager.getExcelData).toHaveBeenCalledWith(0, 5);
+    expect(StorageManager.getExcelData).toHaveBeenCalledWith({ startRowIndex: 0, limit: 5 });
     expect(mockSendResponse).toHaveBeenCalledWith({ excelRows: mockRows });
   });
 
