@@ -10,8 +10,8 @@ This document contains the official metadata, descriptions, and feature lists fo
 *   **Subtitle (Short Description - Max 132 chars):** Automatically fill complex, multi-page web forms from Excel. Shadow DOM piercing & smart CAPTCHA recovery.
 *   **Category:** Productivity
 *   **Supported Languages:** English (United States)
-*   **Privacy Policy URL:** `https://github.com/Sachin-Rawal091/FormPilot/blob/main/PRIVACY.md`
-*   **Support URL:** `https://github.com/Sachin-Rawal091/FormPilot/issues`
+*   **Privacy Policy URL:** `https://github.com/Sachin-Rawal091/FORMANCHOR/blob/main/PRIVACY.md`
+*   **Support URL:** `https://github.com/Sachin-Rawal091/FORMANCHOR/issues`
 
 ---
 
